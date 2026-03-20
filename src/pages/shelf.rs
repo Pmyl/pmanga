@@ -1,11 +1,13 @@
 use std::rc::Rc;
 
 use crate::{
-    components::{importer::Importer, manga_card::MangaCard},
+    components::{
+        importer::Importer, manga_card::MangaCard, weebcentral_importer::WeebCentralImporter,
+    },
     routes::Route,
     storage::{
         db::Db,
-        models::MangaId,
+        models::{MangaId, MangaSource},
         progress::{is_startup_redirect_done, load_last_opened, mark_startup_redirect_done},
     },
 };
@@ -23,6 +25,8 @@ struct MangaDisplayData {
     progress_value: f32,
     pages_read: u32,
     total_pages: u32,
+    /// True for WeebCentral manga — renders a 🌐 badge on the card.
+    is_web: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,6 +41,9 @@ pub fn ShelfPage() -> Element {
     // Controls whether the importer modal is visible.
     let mut show_importer: Signal<bool> = use_signal(|| false);
 
+    // Controls whether the WeebCentral importer modal is visible.
+    let mut show_wc_importer: Signal<bool> = use_signal(|| false);
+
     // Bump this to trigger a data refresh after import.
     let mut refresh_counter: Signal<u32> = use_signal(|| 0);
 
@@ -45,7 +52,7 @@ pub fn ShelfPage() -> Element {
 
     // Open DB on mount.
     use_effect(move || {
-        wasm_bindgen_futures::spawn_local(async move {
+        spawn(async move {
             match Db::open().await {
                 Ok(db) => *db_signal.write() = Some(Rc::new(db)),
                 Err(e) => web_sys::console::error_1(&format!("DB open error: {e}").into()),
@@ -81,11 +88,14 @@ pub fn ShelfPage() -> Element {
             return;
         };
 
-        wasm_bindgen_futures::spawn_local(async move {
+        spawn(async move {
             // Revoke old blob URLs to avoid memory leaks.
+            // Never revoke CDN URLs (WeebCentral) — only blob: object URLs.
             for old in display_data.read().iter() {
                 if let Some(url) = &old.cover_url {
-                    let _ = web_sys::Url::revoke_object_url(url);
+                    if url.starts_with("blob:") {
+                        let _ = web_sys::Url::revoke_object_url(url);
+                    }
                 }
             }
 
@@ -122,11 +132,17 @@ pub fn ShelfPage() -> Element {
                 let mut sorted = chapters.clone();
                 sorted.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
-                // Cover URL: page 0 of the first chapter.
+                // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
                 let cover_url: Option<String> = if let Some(first) = sorted.first() {
-                    match db.load_page(&first.id, 0).await {
-                        Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
-                        _ => None,
+                    if !first.page_urls.is_empty() {
+                        // WeebCentral: use the first CDN URL directly
+                        first.page_urls.first().cloned()
+                    } else {
+                        // Local: load blob from IndexedDB
+                        match db.load_page(&first.id, 0).await {
+                            Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
+                            _ => None,
+                        }
                     }
                 } else {
                     None
@@ -155,6 +171,7 @@ pub fn ShelfPage() -> Element {
                     progress_value,
                     pages_read,
                     total_pages,
+                    is_web: matches!(manga.source, MangaSource::WeebCentral { .. }),
                 });
             }
 
@@ -178,6 +195,13 @@ pub fn ShelfPage() -> Element {
                             nav.push(Route::Settings {});
                         },
                         "⚙"
+                    }
+                    button {
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#5a9fd4] text-black font-semibold active:bg-[#4a8fc4]",
+                        onclick: move |_| {
+                            *show_wc_importer.write() = true;
+                        },
+                        "🌐 WeebCentral"
                     }
                     button {
                         class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
@@ -208,11 +232,13 @@ pub fn ShelfPage() -> Element {
                                         id: MangaId(item.manga_id.clone()),
                                         title: item.title.clone(),
                                         mangadex_id: None,
+                                        source: crate::storage::models::MangaSource::Local,
                                     },
                                     cover_url: item.cover_url.clone(),
                                     progress_value: item.progress_value,
                                     pages_read: item.pages_read,
                                     total_pages: item.total_pages,
+                                    is_web: item.is_web,
                                     on_click: move |_| {
                                         nav2.push(Route::Library {
                                             manga_id: manga_id.clone(),
@@ -237,6 +263,22 @@ pub fn ShelfPage() -> Element {
                         },
                         on_cancel: move |_| {
                             *show_importer.write() = false;
+                        },
+                    }
+                }
+            }
+
+            // WeebCentral importer modal
+            if *show_wc_importer.read() {
+                if let Some(db) = db_signal.read().clone() {
+                    WeebCentralImporter {
+                        db,
+                        on_complete: move |_manga_id: MangaId| {
+                            *show_wc_importer.write() = false;
+                            *refresh_counter.write() += 1;
+                        },
+                        on_cancel: move |_| {
+                            *show_wc_importer.write() = false;
                         },
                     }
                 }

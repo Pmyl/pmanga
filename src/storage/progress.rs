@@ -5,6 +5,7 @@ use serde_json;
 use web_sys;
 
 const LAST_OPENED_KEY: &str = "pmanga_last_opened";
+const PROXY_URL_KEY: &str = "pmanga_proxy_url";
 
 /// sessionStorage key used to ensure the startup redirect to the last-read
 /// page fires only once per browser session (on fresh app open), not every
@@ -51,6 +52,22 @@ pub fn mark_startup_redirect_done() {
         return;
     };
     let _ = storage.set_item(STARTUP_REDIRECT_DONE_KEY, "1");
+}
+
+pub fn save_proxy_url(url: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
+    let _ = storage.set_item(PROXY_URL_KEY, url);
+}
+
+pub fn load_proxy_url() -> Option<String> {
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    storage.get_item(PROXY_URL_KEY).ok()?
 }
 
 #[allow(dead_code)]

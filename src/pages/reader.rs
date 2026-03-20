@@ -270,7 +270,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             img_natural_size.set(None);
 
             if let Some(url) = url {
-                wasm_bindgen_futures::spawn_local(async move {
+                spawn(async move {
                     let Ok(img) = web_sys::HtmlImageElement::new() else {
                         return;
                     };
@@ -534,11 +534,14 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     {
         let db_signal = db_signal;
         let mut blob_url = blob_url;
+        let chapter_meta_signal = chapter_meta_signal;
 
         use_resource(move || {
             async move {
                 let current_page = page_signal();
                 let current_chapter_id = chapter_id_signal();
+                // Read chapter_meta so this resource re-runs when it changes.
+                let chapter_meta = chapter_meta_signal.read().clone();
 
                 let db = {
                     let guard = db_signal.read();
@@ -546,14 +549,25 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 };
                 let Some(db) = db else { return };
 
-                // Revoke the previous object URL to avoid memory leaks.
+                // Revoke the previous object URL — only blob: URLs, never CDN URLs.
                 {
                     let old = blob_url.peek().clone();
                     if let Some(url) = old {
-                        let _ = web_sys::Url::revoke_object_url(&url);
+                        if url.starts_with("blob:") {
+                            let _ = web_sys::Url::revoke_object_url(&url);
+                        }
                     }
                 }
 
+                // WeebCentral: use the stored CDN URL directly — no IDB fetch needed.
+                if let Some(ref meta) = chapter_meta {
+                    if !meta.page_urls.is_empty() {
+                        *blob_url.write() = meta.page_urls.get(current_page as usize).cloned();
+                        return;
+                    }
+                }
+
+                // Local: load blob from IndexedDB (existing behaviour unchanged).
                 match db
                     .load_page(&ChapterId(current_chapter_id), current_page as u32)
                     .await

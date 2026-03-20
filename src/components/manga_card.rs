@@ -20,6 +20,9 @@ pub struct MangaCardProps {
     pub progress_value: f32,
     pub pages_read: u32,
     pub total_pages: u32,
+    /// When true, renders a 🌐 badge indicating a WeebCentral (web) manga.
+    #[props(default = false)]
+    pub is_web: bool,
     pub on_click: EventHandler<()>,
 }
 
@@ -31,16 +34,26 @@ pub fn MangaCard(props: MangaCardProps) -> Element {
             onclick: move |_| props.on_click.call(()),
 
             // Cover thumbnail or placeholder
-            if let Some(url) = props.cover_url.clone() {
-                img {
-                    class: "w-full aspect-[2/3] object-cover bg-[#111]",
-                    src: "{url}",
-                    alt: "{props.manga.title}",
+            div {
+                class: "relative",
+                if let Some(url) = props.cover_url.clone() {
+                    img {
+                        class: "w-full aspect-[2/3] object-cover bg-[#111]",
+                        src: "{url}",
+                        alt: "{props.manga.title}",
+                    }
+                } else {
+                    div {
+                        class: "w-full aspect-[2/3] bg-[#111] flex items-center justify-center text-[#333] text-3xl",
+                        "?"
+                    }
                 }
-            } else {
-                div {
-                    class: "w-full aspect-[2/3] bg-[#111] flex items-center justify-center text-[#333] text-3xl",
-                    "?"
+                // Web source badge
+                if props.is_web {
+                    div {
+                        class: "absolute top-1.5 left-1.5 text-xs bg-black/60 rounded px-1 py-0.5 leading-none",
+                        "🌐"
+                    }
                 }
             }
 

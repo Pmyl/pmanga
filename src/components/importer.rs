@@ -8,9 +8,6 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
-
 use crate::{
     bridge::js::{
         self, ChapterVolumeEntry, bytes_to_blob, mangadex_chapters, mangadex_search,
@@ -19,6 +16,7 @@ use crate::{
     storage::{
         db::Db,
         models::{ChapterId, ChapterMeta, MangaId, MangaMeta},
+        tankobon::{TankobonRow, fetch_tankobon_csv, lookup_tankobon},
     },
 };
 
@@ -302,64 +300,6 @@ fn lookup_tankobon_from_mangadex(chapter_str: &str, entries: &[ChapterVolumeEntr
 }
 
 // ---------------------------------------------------------------------------
-// Tankobon CSV lookup
-// ---------------------------------------------------------------------------
-
-/// Simple CSV row: manga_title, chapter_number, tankobon_number
-#[derive(Clone)]
-struct TankobonRow {
-    manga_title: String,
-    chapter: String,
-    tankobon: u32,
-}
-
-fn parse_tankobon_csv(csv: &str) -> Vec<TankobonRow> {
-    let mut rows = Vec::new();
-    for line in csv.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.splitn(3, ',').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let manga_title = parts[0].trim().to_string();
-        let chapter = parts[1].trim().to_string();
-        let tankobon: u32 = match parts[2].trim().parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        rows.push(TankobonRow {
-            manga_title,
-            chapter,
-            tankobon,
-        });
-    }
-    rows
-}
-
-fn lookup_tankobon_from_csv(
-    manga_name: &str,
-    chapter_str: &str,
-    rows: &[TankobonRow],
-) -> Option<u32> {
-    let target_ch: f32 = chapter_str.parse().ok()?;
-    let manga_lower = manga_name.to_lowercase();
-
-    for row in rows {
-        if row.manga_title.to_lowercase() != manga_lower {
-            continue;
-        }
-        let row_ch: f32 = row.chapter.parse().ok()?;
-        if (row_ch - target_ch).abs() < 0.01 {
-            return Some(row.tankobon);
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
 // Build ImportRows from collected pdf entries
 // ---------------------------------------------------------------------------
 
@@ -384,7 +324,8 @@ fn build_rows(
             let tankobon_number = if !mangadex_entries.is_empty() {
                 lookup_tankobon_from_mangadex(&chapter_number, mangadex_entries)
             } else {
-                lookup_tankobon_from_csv(manga_name, &chapter_number, csv_rows)
+                let ch: f32 = chapter_number.parse().unwrap_or(0.0);
+                lookup_tankobon(manga_name, ch, csv_rows)
             };
 
             ImportRow {
@@ -428,46 +369,8 @@ pub fn Importer(props: ImporterProps) -> Element {
     // MangaDex chapter-to-volume entries collected in step 2.
     let mdex_entries: Signal<Vec<ChapterVolumeEntry>> = use_signal(Vec::new);
 
-    // Parsed rows from tankobon_db.csv fetched on mount (empty if absent/unreachable).
-    let csv_rows: Signal<Vec<TankobonRow>> = use_signal(Vec::new);
-
     // Error message shown to the user.
     let error_msg: Signal<Option<String>> = use_signal(|| None);
-
-    // Fetch tankobon_db.csv once on mount as an offline fallback for tankobon lookup.
-    // Uses web_sys fetch directly — no eval needed, stays in Dioxus context.
-    {
-        let mut csv_rows = csv_rows;
-        use_resource(move || async move {
-            let window = match web_sys::window() {
-                Some(w) => w,
-                None => return,
-            };
-            let promise = window.fetch_with_str("/tankobon_db.csv");
-            let response = match JsFuture::from(promise).await {
-                Ok(r) => r,
-                Err(_) => return,
-            };
-            let response: web_sys::Response = match response.dyn_into() {
-                Ok(r) => r,
-                Err(_) => return,
-            };
-            if !response.ok() {
-                return;
-            }
-            let text_promise = match response.text() {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let text_val = match JsFuture::from(text_promise).await {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            if let Some(text) = text_val.as_string() {
-                *csv_rows.write() = parse_tankobon_csv(&text);
-            }
-        });
-    }
 
     let step_read = step.read().clone();
 
@@ -523,7 +426,6 @@ pub fn Importer(props: ImporterProps) -> Element {
                             pdf_entries,
                             mdex_entries,
                             error_msg,
-                            csv_rows,
                         }
                     },
 
@@ -549,7 +451,6 @@ pub fn Importer(props: ImporterProps) -> Element {
                             pdf_entries,
                             mdex_entries,
                             error_msg,
-                            csv_rows,
                         }
                     },
 
@@ -611,7 +512,6 @@ struct StepSelectFilesProps {
     pdf_entries: Signal<Vec<(String, Vec<u8>)>>,
     mdex_entries: Signal<Vec<ChapterVolumeEntry>>,
     error_msg: Signal<Option<String>>,
-    csv_rows: Signal<Vec<TankobonRow>>,
 }
 
 impl PartialEq for StepSelectFilesProps {
@@ -624,7 +524,6 @@ impl PartialEq for StepSelectFilesProps {
 fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
     let StepSelectFilesProps {
         preset_manga,
-        csv_rows,
         mut step,
         mut manga_name_guess,
         pdf_entries,
@@ -668,7 +567,7 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
                     let has_preset = preset_manga_for_change.is_some();
                     let preset_title = preset_manga_for_change.as_ref().map(|m| m.title.clone());
 
-                    wasm_bindgen_futures::spawn_local(async move {
+                    spawn(async move {
                         match collect_pdf_entries_from_files(files).await {
                             Ok(entries) => {
                                 if !entries.is_empty() {
@@ -732,10 +631,12 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
                         if preset.is_some() {
                             // Skip MangaDex — go straight to review.
                             let name = preset.as_ref().unwrap().title.clone();
-                            let csv = csv_rows.read().clone();
-                            let rows = build_rows(entries, &name, &[], &csv);
-                            *mdex_entries.write() = vec![];
-                            *step.write() = ImportStep::Review { rows };
+                            spawn(async move {
+                                let csv = fetch_tankobon_csv().await;
+                                let rows = build_rows(entries, &name, &[], &csv);
+                                *mdex_entries.write() = vec![];
+                                *step.write() = ImportStep::Review { rows };
+                            });
                         } else {
                             // Search MangaDex.
                             let search_name = if manga_name.is_empty() {
@@ -752,7 +653,7 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
 
                             *step2.write() = ImportStep::FetchingMangaDex;
 
-                            wasm_bindgen_futures::spawn_local(async move {
+                            spawn(async move {
                                 match mangadex_search(&search_name).await {
                                     Ok(results) => {
                                         *step.write() =
@@ -786,7 +687,6 @@ struct StepSelectMangaDexProps {
     pdf_entries: Signal<Vec<(String, Vec<u8>)>>,
     mdex_entries: Signal<Vec<ChapterVolumeEntry>>,
     error_msg: Signal<Option<String>>,
-    csv_rows: Signal<Vec<TankobonRow>>,
 }
 
 impl PartialEq for StepSelectMangaDexProps {
@@ -804,7 +704,6 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
         pdf_entries,
         mdex_entries,
         error_msg,
-        csv_rows,
     } = props;
 
     rsx! {
@@ -838,7 +737,7 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
                                         let mut error_msg = error_msg.clone();
                                         let manga_name_guess = manga_name_guess.clone();
                                         let pdf_entries = pdf_entries.clone();
-                                        wasm_bindgen_futures::spawn_local(async move {
+                                        spawn(async move {
                                             *step.write() = ImportStep::FetchingMangaDex;
                                             match mangadex_chapters(&id).await {
                                                 Ok(entries) => {
@@ -849,7 +748,7 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
                                                         pdf_entries.read().clone();
                                                     let mdex =
                                                         mdex_entries.read().clone();
-                                                    let csv = csv_rows.read().clone();
+                                                    let csv = fetch_tankobon_csv().await;
                                                     let rows = build_rows(
                                                         pdf_ents, &name, &mdex, &csv,
                                                     );
@@ -888,9 +787,11 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
                             let name = manga_name_guess.read().clone();
                             let entries = pdf_entries.read().clone();
                             let mdex = mdex_entries.read().clone();
-                            let csv = csv_rows.read().clone();
-                            let rows = build_rows(entries, &name, &mdex, &csv);
-                            *step.write() = ImportStep::Review { rows };
+                            spawn(async move {
+                                let csv = fetch_tankobon_csv().await;
+                                let rows = build_rows(entries, &name, &mdex, &csv);
+                                *step.write() = ImportStep::Review { rows };
+                            });
                         }
                     },
                     "Skip / Not listed"
@@ -1064,7 +965,7 @@ fn StepReview(props: StepReviewProps) -> Element {
                             let mut error_msg = error_msg.clone();
                             let on_complete = on_complete.clone();
 
-                            wasm_bindgen_futures::spawn_local(async move {
+                            spawn(async move {
                                 let result = run_import(
                                     rows_snapshot,
                                     db,
@@ -1147,6 +1048,7 @@ async fn run_import(
                         id: MangaId(random_id()),
                         title: row.manga_name.clone(),
                         mangadex_id: None,
+                        source: crate::storage::models::MangaSource::Local,
                     };
                     db.save_manga(&new_manga).await?;
                     existing_mangas.push(new_manga.clone());
@@ -1168,6 +1070,8 @@ async fn run_import(
             tankobon_number: tankobon_num,
             filename: row.filename.clone(),
             page_count,
+            source: crate::storage::models::ChapterSource::Local,
+            page_urls: vec![],
         };
         db.save_manga(&manga_meta).await?;
         db.save_chapter(&chapter_meta).await?;

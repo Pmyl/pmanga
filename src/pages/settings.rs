@@ -7,6 +7,7 @@ use wasm_bindgen_futures::JsFuture;
 use crate::{
     input::{Action, config::GamepadConfig},
     routes::Route,
+    storage::progress::{load_proxy_url, save_proxy_url},
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,10 @@ pub fn SettingsPage() -> Element {
 
     // Which action is currently waiting for a button press; None = idle.
     let mut remapping: Signal<Option<Action>> = use_signal(|| None);
+
+    // WeebCentral proxy URL (persisted in localStorage).
+    let mut proxy_url_input: Signal<String> = use_signal(|| load_proxy_url().unwrap_or_default());
+    let mut proxy_saved: Signal<bool> = use_signal(|| false);
 
     // Build the display rows from the current config snapshot.
     let rows = config.read().display_rows();
@@ -226,6 +231,41 @@ pub fn SettingsPage() -> Element {
                             remapping.set(None);
                         },
                         "Reset to Defaults"
+                    }
+                }
+
+                // ── WeebCentral Proxy ──────────────────────────────────────
+                div { class: "flex flex-col gap-2 pt-2 border-t border-[#222]",
+                    h2 { class: "text-base font-semibold text-[#ccc]", "WeebCentral Proxy URL" }
+                    p {
+                        class: "text-sm text-[#666]",
+                        "Address of the pmanga-proxy server on your local network."
+                    }
+                    div { class: "flex gap-2",
+                        input {
+                            class: "flex-1 bg-[#111] border border-[#333] rounded px-3 py-2 text-sm focus:outline-none focus:border-[#555]",
+                            r#type: "text",
+                            placeholder: "http://192.168.1.x:7331",
+                            value: "{proxy_url_input}",
+                            oninput: move |e| {
+                                *proxy_url_input.write() = e.value();
+                                proxy_saved.set(false);
+                            },
+                        }
+                        button {
+                            class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c] shrink-0",
+                            onclick: move |_| {
+                                save_proxy_url(&proxy_url_input.read());
+                                proxy_saved.set(true);
+                            },
+                            "Save"
+                        }
+                    }
+                    if *proxy_saved.read() {
+                        p {
+                            class: "text-xs text-[#4caf50]",
+                            "✓ Saved"
+                        }
                     }
                 }
             }

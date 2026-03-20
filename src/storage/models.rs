@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// Source enums
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum MangaSource {
+    #[default]
+    Local,
+    WeebCentral {
+        series_url: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum ChapterSource {
+    #[default]
+    Local,
+    WeebCentral {
+        chapter_id: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MangaId(pub String);
 
@@ -11,6 +33,8 @@ pub struct MangaMeta {
     pub id: MangaId,
     pub title: String,
     pub mangadex_id: Option<String>,
+    #[serde(default)]
+    pub source: MangaSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +46,11 @@ pub struct ChapterMeta {
     pub tankobon_number: Option<u32>,
     pub filename: String,
     pub page_count: u32,
+    #[serde(default)]
+    pub source: ChapterSource,
+    /// CDN image URLs for WeebCentral chapters. Empty for Local chapters.
+    #[serde(default)]
+    pub page_urls: Vec<String>,
 }
 
 /// An entry in the interleaved library view.
@@ -129,6 +158,8 @@ mod tests {
             tankobon_number,
             filename: format!("{}.cbz", id),
             page_count: 20,
+            source: crate::storage::models::ChapterSource::Local,
+            page_urls: vec![],
         }
     }
 
