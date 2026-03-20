@@ -1,17 +1,26 @@
-// pmanga_bridge.js — loaded as type="module"
+// pmanga_bridge.js — loaded as a plain script (not type="module")
 // Exposes window.pmanga_* globals for use via Dioxus eval.
-// JSZip is expected to be loaded as a UMD script before this module runs.
-
-import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs";
+// JSZip is expected to be loaded as a UMD script before this file runs.
+// PDF.js is loaded lazily via dynamic import on first use.
 
 // ---------------------------------------------------------------------------
-// PDF.js worker setup
+// PDF.js lazy loader
 // ---------------------------------------------------------------------------
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
+const PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs";
+const PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
 
-window.pmanga_init_pdf = function () {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
+let _pdfjsLib = null;
+
+async function getPdfJs() {
+  if (_pdfjsLib) return _pdfjsLib;
+  _pdfjsLib = await import(PDFJS_URL);
+  _pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  return _pdfjsLib;
+}
+
+window.pmanga_init_pdf = async function () {
+  await getPdfJs();
 };
 
 // ---------------------------------------------------------------------------
@@ -24,6 +33,7 @@ window.pmanga_init_pdf = function () {
  * @returns {Promise<number>}
  */
 window.pmanga_pdf_page_count = async function (pdfBytes) {
+  const pdfjsLib = await getPdfJs();
   const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
   const pdf = await loadingTask.promise;
   const count = pdf.numPages;
@@ -47,6 +57,7 @@ window.pmanga_pdf_page_count = async function (pdfBytes) {
  * @returns {Promise<number[]>} JPEG bytes as a plain Array
  */
 window.pmanga_render_page_to_uint8array = async function (pdfBytes, pageNum, scale = 2.0) {
+  const pdfjsLib = await getPdfJs();
   const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
   const pdf = await loadingTask.promise;
 
@@ -84,6 +95,7 @@ window.pmanga_render_page_to_uint8array = async function (pdfBytes, pageNum, sca
 };
 
 window.pmanga_render_pdf_page = async function (pdfBytes, pageNum, scale = 2.0) {
+  const pdfjsLib = await getPdfJs();
   const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
   const pdf = await loadingTask.promise;
 
