@@ -1,12 +1,29 @@
 use std::rc::Rc;
 
+use crate::{
+    components::{importer::Importer, manga_card::MangaCard},
+    routes::Route,
+    storage::{db::Db, models::MangaId, progress::load_last_opened},
+};
 use dioxus::prelude::*;
 
-use crate::{
-    components::importer::Importer,
-    routes::Route,
-    storage::{db::Db, models::MangaId},
-};
+// ---------------------------------------------------------------------------
+// Per-manga display data (assembled asynchronously after DB load)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq)]
+struct MangaDisplayData {
+    manga_id: String,
+    title: String,
+    cover_url: Option<String>,
+    progress_value: f32,
+    pages_read: u32,
+    total_pages: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Page component
+// ---------------------------------------------------------------------------
 
 #[component]
 pub fn ShelfPage() -> Element {
@@ -19,6 +36,9 @@ pub fn ShelfPage() -> Element {
     // Bump this to trigger a data refresh after import.
     let mut refresh_counter: Signal<u32> = use_signal(|| 0);
 
+    // Assembled display data for the grid.
+    let mut display_data: Signal<Vec<MangaDisplayData>> = use_signal(Vec::new);
+
     // Open DB on mount.
     use_effect(move || {
         wasm_bindgen_futures::spawn_local(async move {
@@ -28,6 +48,112 @@ pub fn ShelfPage() -> Element {
             }
         });
     });
+
+    // Startup redirect: if there is a last-opened position in localStorage,
+    // navigate straight to the reader on first mount.
+    use_effect(move || {
+        if let Some(last) = load_last_opened() {
+            let nav = navigator();
+            nav.push(Route::Reader {
+                manga_id: last.manga_id,
+                chapter_id: last.chapter_id,
+                page: last.page,
+            });
+        }
+    });
+
+    // Load (or re-load) the manga grid whenever the DB becomes ready or
+    // refresh_counter is bumped.
+    use_effect(move || {
+        let counter = *refresh_counter.read();
+        let _ = counter; // read so the effect re-runs when it changes
+
+        let Some(db) = db_signal.read().clone() else {
+            return;
+        };
+
+        wasm_bindgen_futures::spawn_local(async move {
+            // Revoke old blob URLs to avoid memory leaks.
+            for old in display_data.read().iter() {
+                if let Some(url) = &old.cover_url {
+                    let _ = web_sys::Url::revoke_object_url(url);
+                }
+            }
+
+            let mangas = match db.load_all_mangas().await {
+                Ok(v) => v,
+                Err(e) => {
+                    web_sys::console::error_1(&format!("load_all_mangas error: {e}").into());
+                    return;
+                }
+            };
+
+            let all_progress = match db.load_all_progress().await {
+                Ok(v) => v,
+                Err(e) => {
+                    web_sys::console::error_1(&format!("load_all_progress error: {e}").into());
+                    return;
+                }
+            };
+
+            let mut items: Vec<MangaDisplayData> = Vec::new();
+
+            for manga in mangas {
+                let chapters = match db.load_chapters_for_manga(&manga.id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("load_chapters error for {}: {e}", manga.id.0).into(),
+                        );
+                        continue;
+                    }
+                };
+
+                // Sort chapters by chapter_number to find the "first" one.
+                let mut sorted = chapters.clone();
+                sorted.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
+
+                // Cover URL: page 0 of the first chapter.
+                let cover_url: Option<String> = if let Some(first) = sorted.first() {
+                    match db.load_page(&first.id, 0).await {
+                        Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // Total pages across all chapters for this manga.
+                let total_pages: u32 = chapters.iter().map(|c| c.page_count).sum();
+
+                // Pages read: sum of progress.page across all chapters of this manga.
+                let pages_read: u32 = all_progress
+                    .iter()
+                    .filter(|p| p.manga_id == manga.id)
+                    .map(|p| p.page as u32)
+                    .sum();
+
+                let progress_value = if total_pages > 0 {
+                    (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                items.push(MangaDisplayData {
+                    manga_id: manga.id.0.clone(),
+                    title: manga.title.clone(),
+                    cover_url,
+                    progress_value,
+                    pages_read,
+                    total_pages,
+                });
+            }
+
+            *display_data.write() = items;
+        });
+    });
+
+    let nav = navigator();
 
     rsx! {
         div {
@@ -40,7 +166,7 @@ pub fn ShelfPage() -> Element {
                     button {
                         class: "btn btn-icon",
                         onclick: move |_| {
-                            navigator().push(Route::Settings {});
+                            nav.push(Route::Settings {});
                         },
                         "⚙"
                     }
@@ -53,12 +179,40 @@ pub fn ShelfPage() -> Element {
                     }
                 }
             }
+
             div {
                 class: "shelf-grid",
-                // TODO: render manga cards from storage (refresh_counter used to trigger re-fetch)
-                p {
-                    class: "empty-state",
-                    "No manga yet. Import something to get started."
+                if display_data.read().is_empty() {
+                    p {
+                        class: "empty-state",
+                        "No manga yet. Import something to get started."
+                    }
+                } else {
+                    for item in display_data.read().iter().cloned() {
+                        {
+                            let manga_id = item.manga_id.clone();
+                            let nav2 = navigator();
+                            rsx! {
+                                MangaCard {
+                                    key: "{item.manga_id}",
+                                    manga: crate::storage::models::MangaMeta {
+                                        id: MangaId(item.manga_id.clone()),
+                                        title: item.title.clone(),
+                                        mangadex_id: None,
+                                    },
+                                    cover_url: item.cover_url.clone(),
+                                    progress_value: item.progress_value,
+                                    pages_read: item.pages_read,
+                                    total_pages: item.total_pages,
+                                    on_click: move |_| {
+                                        nav2.push(Route::Library {
+                                            manga_id: manga_id.clone(),
+                                        });
+                                    },
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
