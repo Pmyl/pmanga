@@ -19,10 +19,6 @@ async function getPdfJs() {
   return _pdfjsLib;
 }
 
-window.pmanga_init_pdf = async function () {
-  await getPdfJs();
-};
-
 // ---------------------------------------------------------------------------
 // PDF functions
 // ---------------------------------------------------------------------------
@@ -94,35 +90,6 @@ window.pmanga_render_page_to_uint8array = async function (pdfBytes, pageNum, sca
   });
 };
 
-window.pmanga_render_pdf_page = async function (pdfBytes, pageNum, scale = 2.0) {
-  const pdfjsLib = await getPdfJs();
-  const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
-  const pdf = await loadingTask.promise;
-
-  const page = await pdf.getPage(pageNum);
-  const viewport = page.getViewport({ scale });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-
-  const ctx = canvas.getContext("2d");
-  await page.render({ canvasContext: ctx, viewport }).promise;
-
-  page.cleanup();
-  pdf.destroy();
-
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("canvas.toBlob returned null"));
-        return;
-      }
-      resolve(URL.createObjectURL(blob));
-    }, "image/png");
-  });
-};
-
 // ---------------------------------------------------------------------------
 // ZIP function
 // ---------------------------------------------------------------------------
@@ -165,98 +132,4 @@ window.pmanga_extract_zip = async function (zipBytes) {
   });
 
   return entries;
-};
-
-// ---------------------------------------------------------------------------
-// MangaDex functions
-// ---------------------------------------------------------------------------
-
-const MANGADEX_BASE = "https://api.mangadex.org";
-
-/**
- * Search manga by title on MangaDex. Returns up to 10 results.
- * @param {string} query
- * @returns {Promise<Array<{id: string, title: string}>>}
- */
-window.pmanga_mangadex_search = async function (query) {
-  try {
-    const url = new URL(`${MANGADEX_BASE}/manga`);
-    url.searchParams.set("title", query);
-    url.searchParams.set("limit", "10");
-    url.searchParams.set("contentRating[]", "safe");
-    url.searchParams.append("contentRating[]", "suggestive");
-    url.searchParams.append("contentRating[]", "erotica");
-    url.searchParams.append("contentRating[]", "pornographic");
-
-    const resp = await fetch(url.toString());
-    if (!resp.ok) return [];
-
-    const json = await resp.json();
-    const data = json.data ?? [];
-
-    return data.map((manga) => {
-      const titles = manga.attributes?.title ?? {};
-      // Prefer English, fall back to first available language.
-      const title = titles["en"] ?? Object.values(titles)[0] ?? "(no title)";
-      return { id: manga.id, title };
-    });
-  } catch (_err) {
-    return [];
-  }
-};
-
-/**
- * Get chapter-to-volume mapping for a manga (English chapters only).
- * Paginates automatically up to 2000 chapters.
- * @param {string} mangadex_id
- * @returns {Promise<Array<{chapter: string, volume: string|null}>>}
- */
-window.pmanga_mangadex_chapters = async function (mangadex_id) {
-  const MAX_CHAPTERS = 2000;
-  const PAGE_SIZE = 100;
-
-  const results = [];
-
-  try {
-    let offset = 0;
-
-    while (results.length < MAX_CHAPTERS) {
-      const url = new URL(`${MANGADEX_BASE}/manga/${mangadex_id}/feed`);
-      url.searchParams.set("limit", String(PAGE_SIZE));
-      url.searchParams.set("offset", String(offset));
-      url.searchParams.set("translatedLanguage[]", "en");
-      url.searchParams.set("order[chapter]", "asc");
-      url.searchParams.set("contentRating[]", "safe");
-      url.searchParams.append("contentRating[]", "suggestive");
-      url.searchParams.append("contentRating[]", "erotica");
-      url.searchParams.append("contentRating[]", "pornographic");
-
-      const resp = await fetch(url.toString());
-      if (!resp.ok) break;
-
-      const json = await resp.json();
-      const data = json.data ?? [];
-
-      if (data.length === 0) break;
-
-      for (const ch of data) {
-        const attrs = ch.attributes ?? {};
-        const chapter = attrs.chapter ?? null;
-        if (chapter === null) continue; // skip unnumbered chapters
-        results.push({
-          chapter: String(chapter),
-          volume: attrs.volume != null ? String(attrs.volume) : null,
-        });
-      }
-
-      offset += data.length;
-
-      // If we got fewer results than requested, we're at the end.
-      if (data.length < PAGE_SIZE) break;
-    }
-  } catch (_err) {
-    return [];
-  }
-
-  return results;
 };
