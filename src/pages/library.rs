@@ -214,8 +214,6 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 LibraryEntry::LoneChapter(ch) => vec![ch.id.clone()],
             };
 
-            let is_tankobon = matches!(entry, LibraryEntry::Tankobon { .. });
-
             for cid in &chapter_ids {
                 if let Err(e) = db.delete_chapter(cid).await {
                     web_sys::console::error_1(&format!("delete_chapter error: {e}").into());
@@ -227,27 +225,25 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 }
             }
 
-            // If it was a Tankobon, check if any chapters remain; if none, delete the manga.
-            if is_tankobon {
-                match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
-                    Ok(remaining) if remaining.is_empty() => {
-                        if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
-                            web_sys::console::error_1(&format!("delete_manga error: {e}").into());
-                        }
-                        // Clear the last-opened position so the app doesn't
-                        // try to reopen a page from a manga that no longer exists.
-                        clear_last_opened();
-                        // Navigate back to shelf since the manga is gone.
-                        navigator().push(Route::Shelf {});
-                        return;
+            // Check if any chapters remain; if none, delete the manga entirely.
+            match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
+                Ok(remaining) if remaining.is_empty() => {
+                    if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
+                        web_sys::console::error_1(&format!("delete_manga error: {e}").into());
                     }
-                    Err(e) => {
-                        web_sys::console::error_1(
-                            &format!("load_chapters_for_manga error: {e}").into(),
-                        );
-                    }
-                    _ => {}
+                    // Clear the last-opened position so the app doesn't
+                    // try to reopen a page from a manga that no longer exists.
+                    clear_last_opened();
+                    // Navigate back to shelf since the manga is gone.
+                    navigator().push(Route::Shelf {});
+                    return;
                 }
+                Err(e) => {
+                    web_sys::console::error_1(
+                        &format!("load_chapters_for_manga error: {e}").into(),
+                    );
+                }
+                _ => {}
             }
 
             *refresh_counter.write() += 1;

@@ -1118,7 +1118,7 @@ async fn run_import(
     };
 
     // Load existing mangas to match by title.
-    let existing_mangas = db.load_all_mangas().await.unwrap_or_default();
+    let mut existing_mangas = db.load_all_mangas().await.unwrap_or_default();
 
     let mut last_manga_id: Option<MangaId> = preset_manga.as_ref().map(|m| m.id.clone());
 
@@ -1149,6 +1149,7 @@ async fn run_import(
                         mangadex_id: None,
                     };
                     db.save_manga(&new_manga).await?;
+                    existing_mangas.push(new_manga.clone());
                     new_manga
                 }
             }
