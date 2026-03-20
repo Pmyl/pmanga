@@ -225,51 +225,43 @@ pub async fn mangadex_search(query: &str) -> Result<Vec<(String, String)>, Strin
     Ok(results)
 }
 
-/// Get chapter→volume mapping for a manga from MangaDex (English only).
-/// Paginates automatically. Silently returns empty vec on any error.
+/// Get chapter→volume mapping for a manga using MangaDex's aggregate endpoint.
+/// A single request returns the full mapping across all languages and scanlations,
+/// which is far more complete than the English-only feed (most manga have very few
+/// English translations on MangaDex, so the feed would return almost nothing).
+/// Volume "none" means MangaDex hasn't assigned those chapters to a tankobon yet.
+/// Silently returns empty vec on any error.
 pub async fn mangadex_chapters(mangadex_id: &str) -> Result<Vec<ChapterVolumeEntry>, String> {
-    const PAGE_SIZE: usize = 500;
-    const MAX_CHAPTERS: usize = 2000;
+    let url = format!("{MANGADEX_BASE}/manga/{mangadex_id}/aggregate");
+
+    let json = match fetch_json(&url).await {
+        Ok(j) => j,
+        Err(_) => return Ok(vec![]),
+    };
 
     let mut results: Vec<ChapterVolumeEntry> = Vec::new();
-    let mut offset = 0usize;
 
-    loop {
-        let url = mangadex_url(
-            &format!("/manga/{mangadex_id}/feed"),
-            &[
-                ("limit", &PAGE_SIZE.to_string()),
-                ("offset", &offset.to_string()),
-                ("translatedLanguage%5B%5D", "en"),
-                ("order%5Bchapter%5D", "asc"),
-            ],
-        );
+    let Some(volumes) = json["volumes"].as_object() else {
+        return Ok(results);
+    };
 
-        let json = match fetch_json(&url).await {
-            Ok(j) => j,
-            Err(_) => break,
+    for (vol_key, vol_data) in volumes {
+        // "none" means MangaDex hasn't assigned these chapters to a tankobon yet.
+        let volume = if vol_key == "none" {
+            None
+        } else {
+            Some(vol_key.clone())
         };
 
-        let data = match json["data"].as_array() {
-            Some(d) if !d.is_empty() => d,
-            _ => break,
+        let Some(chapters) = vol_data["chapters"].as_object() else {
+            continue;
         };
 
-        for ch in data {
-            let attrs = &ch["attributes"];
-            let chapter = match attrs["chapter"].as_str() {
-                Some(c) => c.to_string(),
-                None => continue, // skip unnumbered chapters
-            };
-            let volume = attrs["volume"].as_str().map(|s| s.to_string());
-            results.push(ChapterVolumeEntry { chapter, volume });
-        }
-
-        let fetched = data.len();
-        offset += fetched;
-
-        if fetched < PAGE_SIZE || results.len() >= MAX_CHAPTERS {
-            break;
+        for (ch_key, _) in chapters {
+            results.push(ChapterVolumeEntry {
+                chapter: ch_key.clone(),
+                volume: volume.clone(),
+            });
         }
     }
 

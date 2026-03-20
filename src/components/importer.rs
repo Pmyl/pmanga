@@ -286,7 +286,12 @@ fn lookup_tankobon_from_mangadex(chapter_str: &str, entries: &[ChapterVolumeEntr
     let target: f32 = chapter_str.parse().ok()?;
 
     for entry in entries {
-        let entry_ch: f32 = entry.chapter.parse().ok()?;
+        // Use `continue` (not `?`) so a single non-numeric chapter string
+        // (e.g. "Oneshot", "Extra") doesn't abort the entire lookup.
+        let entry_ch: f32 = match entry.chapter.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
         if (entry_ch - target).abs() < 0.01 {
             if let Some(vol_str) = &entry.volume {
                 return vol_str.parse().ok();
