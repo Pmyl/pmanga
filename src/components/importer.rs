@@ -8,6 +8,9 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+
 use crate::{
     bridge::js::{
         self, ChapterVolumeEntry, bytes_to_blob, mangadex_chapters, mangadex_search,
@@ -427,31 +430,37 @@ pub fn Importer(props: ImporterProps) -> Element {
     let error_msg: Signal<Option<String>> = use_signal(|| None);
 
     // Fetch tankobon_db.csv once on mount as an offline fallback for tankobon lookup.
+    // Uses web_sys fetch directly — no eval needed, stays in Dioxus context.
     {
         let mut csv_rows = csv_rows;
-        use_effect(move || {
-            wasm_bindgen_futures::spawn_local(async move {
-                let fetched = dioxus::document::eval(
-                    r#"
-                    try {
-                        const resp = await fetch('/tankobon_db.csv');
-                        if (resp.ok) {
-                            dioxus.send(await resp.text());
-                        } else {
-                            dioxus.send(null);
-                        }
-                    } catch (_) {
-                        dioxus.send(null);
-                    }
-                    "#,
-                )
-                .recv::<Option<String>>()
-                .await;
-
-                if let Ok(Some(text)) = fetched {
-                    *csv_rows.write() = parse_tankobon_csv(&text);
-                }
-            });
+        use_resource(move || async move {
+            let window = match web_sys::window() {
+                Some(w) => w,
+                None => return,
+            };
+            let promise = window.fetch_with_str("/tankobon_db.csv");
+            let response = match JsFuture::from(promise).await {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            let response: web_sys::Response = match response.dyn_into() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            if !response.ok() {
+                return;
+            }
+            let text_promise = match response.text() {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let text_val = match JsFuture::from(text_promise).await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            if let Some(text) = text_val.as_string() {
+                *csv_rows.write() = parse_tankobon_csv(&text);
+            }
         });
     }
 
