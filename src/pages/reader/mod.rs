@@ -52,8 +52,16 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     let db_signal: Signal<Option<Rc<Db>>> = use_signal(|| None);
     let blob_url: Signal<Option<String>> = use_signal(|| None);
     let chapters_signal: Signal<Vec<ChapterMeta>> = use_signal(Vec::new);
-    let chapter_meta_signal: Signal<Option<ChapterMeta>> = use_signal(|| None);
     let manga_title_signal: Signal<String> = use_signal(String::new);
+
+    // Derived: always reflects the current chapter's meta, even after navigation.
+    let chapter_meta_signal = use_memo(move || {
+        chapters_signal
+            .read()
+            .iter()
+            .find(|c| c.id.0 == chapter_id_signal())
+            .cloned()
+    });
 
     // Per-chapter padding / crop.
     let mut padding_signal: Signal<ChapterPadding> =
@@ -264,26 +272,32 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     }
 
     // ----- Resource: sync page with saved progress -----
+    // Reactive to chapter_id_signal so it re-runs whenever we navigate to a
+    // new chapter, not just on the initial mount.
     {
         let db_signal = db_signal;
-        let chapter_id_for_progress = chapter_id.clone();
         let manga_id_for_progress = manga_id.clone();
 
         use_resource(move || {
-            let chapter_id_for_progress = chapter_id_for_progress.clone();
+            // Reading chapter_id_signal() here makes the resource re-run every
+            // time the chapter changes.
+            let current_chapter_id = chapter_id_signal();
+            let db = db_signal.read().clone();
             let manga_id_for_progress = manga_id_for_progress.clone();
             async move {
-                let db = db_signal.read().clone();
                 let Some(db) = db else { return };
+                // Snapshot the page non-reactively so we don't re-run on every
+                // page turn, only on chapter changes.
+                let current_page = *page_signal.peek();
 
                 if let Ok(Some(saved)) = db
-                    .load_progress(&ChapterId(chapter_id_for_progress.clone()))
+                    .load_progress(&ChapterId(current_chapter_id.clone()))
                     .await
                 {
-                    if saved.page != page {
+                    if saved.page != current_page {
                         navigator().replace(Route::Reader {
                             manga_id: manga_id_for_progress,
-                            chapter_id: chapter_id_for_progress,
+                            chapter_id: current_chapter_id,
                             page: saved.page,
                         });
                     }
@@ -293,17 +307,17 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     }
 
     // ----- Resource: load chapters + manga title -----
+    // manga_id never changes while in the reader, so this runs once when the
+    // DB is ready.  chapter_meta_signal is a memo derived from chapters_signal
+    // + chapter_id_signal and updates automatically on navigation.
     {
         let db_signal = db_signal;
         let manga_id_clone = manga_id.clone();
-        let chapter_id_clone = chapter_id.clone();
         let mut chapters_signal = chapters_signal;
-        let mut chapter_meta_signal = chapter_meta_signal;
         let mut manga_title_signal = manga_title_signal;
 
         use_resource(move || {
             let manga_id_clone = manga_id_clone.clone();
-            let chapter_id_clone = chapter_id_clone.clone();
             async move {
                 let db = db_signal.read().clone();
                 let Some(db) = db else { return };
@@ -320,9 +334,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 {
                     Ok(mut chs) => {
                         chs.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
-                        let current = chs.iter().find(|c| c.id.0 == chapter_id_clone).cloned();
                         *chapters_signal.write() = chs;
-                        *chapter_meta_signal.write() = current;
                     }
                     Err(e) => {
                         web_sys::console::error_1(&format!("load_chapters error: {e}").into());
