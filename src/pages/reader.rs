@@ -31,6 +31,7 @@ fn nav_debounce_ok() -> bool {
 use crate::{
     input::gamepad::use_gamepad,
     input::{Action, config::GamepadConfig},
+    pages::padding::{ChapterPadding, Padding, load_chapter_padding, save_chapter_padding},
     routes::Route,
     storage::{
         db::Db,
@@ -173,6 +174,19 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
 
     // Manga title (loaded alongside chapters).
     let manga_title_signal: Signal<String> = use_signal(String::new);
+
+    // Padding adjustment state.
+    let mut padding_signal: Signal<ChapterPadding> =
+        use_signal(|| load_chapter_padding(&chapter_id));
+    let mut padding_modal_open = use_signal(|| false);
+
+    // Sync padding from session storage when chapter changes.
+    if *chapter_id_signal.peek() != chapter_id {
+        let loaded = load_chapter_padding(&chapter_id);
+        if *padding_signal.peek() != loaded {
+            padding_signal.set(loaded);
+        }
+    }
 
     // ----- Gamepad -----
     let gamepad_config = use_signal(|| GamepadConfig::load());
@@ -443,10 +457,38 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         "Page not available"
                     }
                 } else {
-                    img {
-                        class: "max-w-full max-h-screen object-contain block select-none",
-                        src: current_blob_url.clone().unwrap_or_default(),
-                        alt: "Manga page {page}",
+                    {
+                        let p = padding_signal.read().effective_for_page(page);
+                        let has_crop = !p.is_zero();
+
+                        if has_crop {
+                            // Overflow:hidden container clips the edges.
+                            // Image is sized larger than the container by the crop
+                            // amounts so the visible portion fills the viewport.
+                            let img_style = format!(
+                                "max-width: calc(100% + {}px + {}px); max-height: calc(100vh + {}px + {}px); margin: -{}px -{}px -{}px -{}px; object-fit: contain; display: block; user-select: none;",
+                                p.left, p.right, p.up, p.down,
+                                p.up, p.right, p.down, p.left
+                            );
+                            rsx! {
+                                div {
+                                    class: "w-full h-full flex items-center justify-center overflow-hidden",
+                                    img {
+                                        style: "{img_style}",
+                                        src: current_blob_url.clone().unwrap_or_default(),
+                                        alt: "Manga page {page}",
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                img {
+                                    class: "max-w-full max-h-screen object-contain block select-none",
+                                    src: current_blob_url.clone().unwrap_or_default(),
+                                    alt: "Manga page {page}",
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -561,6 +603,223 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                             }
                         }
                     }
+                }
+            }
+
+            // ---- Padding settings button (top-right, always visible) ----
+            div {
+                class: "fixed top-3 right-3 z-10",
+                button {
+                    class: "w-10 h-10 flex items-center justify-center rounded-full bg-black/60 text-[#888] hover:text-[#ccc] active:text-white border-0 cursor-pointer",
+                    onclick: move |_| {
+                        padding_modal_open.set(true);
+                    },
+                    // Crop icon
+                    svg {
+                        class: "w-5 h-5",
+                        fill: "none",
+                        stroke: "currentColor",
+                        stroke_width: "2",
+                        view_box: "0 0 24 24",
+                        path { d: "M6 2v4" }
+                        path { d: "M6 14v8" }
+                        path { d: "M2 6h4" }
+                        path { d: "M14 6h8" }
+                        path { d: "M6 6h12v12H6z" }
+                    }
+                }
+            }
+
+            // ---- Padding adjustment modal ----
+            if padding_modal_open() {
+                PaddingModal {
+                    chapter_id: chapter_id.clone(),
+                    padding: padding_signal,
+                    on_close: move || padding_modal_open.set(false),
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Padding Modal Component
+// ---------------------------------------------------------------------------
+
+#[component]
+fn PaddingModal(
+    chapter_id: String,
+    padding: Signal<ChapterPadding>,
+    on_close: EventHandler<()>,
+) -> Element {
+    let mut padding = padding;
+    let chapter_id_for_save = chapter_id.clone();
+
+    rsx! {
+        // Backdrop
+        div {
+            class: "fixed inset-0 z-40 bg-black/70",
+            onclick: move |_| on_close.call(()),
+        }
+        // Modal
+        div {
+            class: "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 bg-[#1a1a1a] rounded-lg p-4 min-w-[280px] max-w-[90vw]",
+            onclick: move |e| e.stop_propagation(),
+
+            // Header
+            div {
+                class: "flex items-center justify-between mb-4",
+                h3 { class: "text-sm font-medium text-[#ccc] m-0", "Padding Adjustment" }
+                button {
+                    class: "w-6 h-6 flex items-center justify-center rounded bg-transparent text-[#666] hover:text-[#ccc] border-0 cursor-pointer",
+                    onclick: move |_| on_close.call(()),
+                    "✕"
+                }
+            }
+
+            // General section
+            div {
+                class: "mb-4",
+                div { class: "text-xs text-[#666] mb-2 uppercase tracking-wide", "General" }
+                PaddingControls {
+                    padding_value: padding.read().general,
+                    on_change: {
+                        let chapter_id = chapter_id_for_save.clone();
+                        move |p: Padding| {
+                            padding.write().general = p;
+                            save_chapter_padding(&chapter_id, &padding.read());
+                        }
+                    },
+                }
+            }
+
+            // Odd pages section
+            div {
+                class: "mb-4",
+                div { class: "text-xs text-[#666] mb-2 uppercase tracking-wide", "Odd Pages (1, 3, 5...)" }
+                PaddingControls {
+                    padding_value: padding.read().odd,
+                    on_change: {
+                        let chapter_id = chapter_id_for_save.clone();
+                        move |p: Padding| {
+                            padding.write().odd = p;
+                            save_chapter_padding(&chapter_id, &padding.read());
+                        }
+                    },
+                }
+            }
+
+            // Even pages section
+            div {
+                class: "mb-4",
+                div { class: "text-xs text-[#666] mb-2 uppercase tracking-wide", "Even Pages (2, 4, 6...)" }
+                PaddingControls {
+                    padding_value: padding.read().even,
+                    on_change: {
+                        let chapter_id = chapter_id_for_save.clone();
+                        move |p: Padding| {
+                            padding.write().even = p;
+                            save_chapter_padding(&chapter_id, &padding.read());
+                        }
+                    },
+                }
+            }
+
+            // Reset button
+            div {
+                class: "pt-3 border-t border-[#333]",
+                button {
+                    class: "w-full py-2 rounded bg-[#333] text-[#888] hover:bg-[#444] hover:text-[#ccc] border-0 cursor-pointer text-sm",
+                    onclick: {
+                        let chapter_id = chapter_id_for_save.clone();
+                        move |_| {
+                            padding.set(ChapterPadding::default());
+                            save_chapter_padding(&chapter_id, &ChapterPadding::default());
+                        }
+                    },
+                    "Reset All"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn PaddingControls(padding_value: Padding, on_change: EventHandler<Padding>) -> Element {
+    let up = padding_value.up;
+    let down = padding_value.down;
+    let left = padding_value.left;
+    let right = padding_value.right;
+
+    rsx! {
+        div {
+            class: "grid grid-cols-2 gap-2",
+
+            // UP
+            div {
+                class: "flex items-center gap-2",
+                span { class: "w-14 text-xs text-[#888]", "UP" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up: (up - 1).max(0), down, left, right }),
+                    "-"
+                }
+                span { class: "w-8 text-center text-sm text-[#ccc]", "{up}" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up: up + 1, down, left, right }),
+                    "+"
+                }
+            }
+
+            // DOWN
+            div {
+                class: "flex items-center gap-2",
+                span { class: "w-14 text-xs text-[#888]", "DOWN" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down: (down - 1).max(0), left, right }),
+                    "-"
+                }
+                span { class: "w-8 text-center text-sm text-[#ccc]", "{down}" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down: down + 1, left, right }),
+                    "+"
+                }
+            }
+
+            // LEFT
+            div {
+                class: "flex items-center gap-2",
+                span { class: "w-14 text-xs text-[#888]", "LEFT" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down, left: (left - 1).max(0), right }),
+                    "-"
+                }
+                span { class: "w-8 text-center text-sm text-[#ccc]", "{left}" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down, left: left + 1, right }),
+                    "+"
+                }
+            }
+
+            // RIGHT
+            div {
+                class: "flex items-center gap-2",
+                span { class: "w-14 text-xs text-[#888]", "RIGHT" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down, left, right: (right - 1).max(0) }),
+                    "-"
+                }
+                span { class: "w-8 text-center text-sm text-[#ccc]", "{right}" }
+                button {
+                    class: "w-7 h-7 rounded bg-[#333] text-[#ccc] hover:bg-[#444] active:bg-[#555] border-0 cursor-pointer text-sm",
+                    onclick: move |_| on_change.call(Padding { up, down, left, right: right + 1 }),
+                    "+"
                 }
             }
         }
