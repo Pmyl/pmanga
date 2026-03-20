@@ -109,34 +109,34 @@ pub fn SettingsPage() -> Element {
 
     rsx! {
         div {
-            class: "page settings-page",
+            class: "h-screen flex flex-col overflow-hidden",
 
             // ── Header ────────────────────────────────────────────────────
             div {
-                class: "settings-header",
+                class: "flex items-center gap-2 px-4 py-3 border-b border-[#222] shrink-0",
                 button {
-                    class: "btn btn-back",
+                    class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                     onclick: move |_| {
                         navigator().push(Route::Shelf {});
                     },
                     "← Back"
                 }
-                h1 { "Settings" }
+                h1 { class: "text-lg font-semibold", "Settings" }
             }
 
             // ── Section ───────────────────────────────────────────────────
             div {
-                class: "settings-section",
+                class: "p-4 flex flex-col gap-3 overflow-y-auto flex-1",
 
-                h2 { "Gamepad Bindings" }
+                h2 { class: "text-base font-semibold text-[#ccc]", "Gamepad Bindings" }
                 p {
-                    class: "settings-hint",
+                    class: "text-sm text-[#666]",
                     "Press \"Remap\" next to an action, then press the desired button on your gamepad."
                 }
 
                 // ── Binding table ─────────────────────────────────────────
                 div {
-                    class: "settings-table",
+                    class: "flex flex-col gap-px bg-[#222] rounded-lg overflow-hidden",
 
                     for (action, button) in rows {
                         {
@@ -148,32 +148,32 @@ pub fn SettingsPage() -> Element {
 
                             rsx! {
                                 div {
-                                    class: "settings-row",
+                                    class: "flex items-center bg-[#1a1a1a] px-3.5 py-2.5 gap-3",
                                     key: "{action:?}",
 
                                     // Action name
                                     span {
-                                        class: "settings-row-action",
+                                        class: "flex-1 text-sm",
                                         "{action.label()}"
                                     }
 
                                     // Current binding
                                     span {
-                                        class: "settings-row-button",
+                                        class: "text-xs text-[#888] flex-1 text-center",
                                         "{button_label}"
                                     }
 
                                     // Remap controls
                                     div {
-                                        class: "settings-row-remap",
+                                        class: "shrink-0 flex gap-1",
 
                                         if is_remapping_this {
                                             span {
-                                                class: "settings-listening",
+                                                class: "text-xs text-[#e8b44a] italic",
                                                 "Listening…"
                                             }
                                             button {
-                                                class: "btn btn-small btn-ghost",
+                                                class: "border-0 cursor-pointer text-xs px-2 py-0.5 rounded bg-transparent border border-[#333] text-[#ccc] active:bg-[#1f1f1f]",
                                                 onclick: move |_| {
                                                     remapping.set(None);
                                                 },
@@ -181,7 +181,7 @@ pub fn SettingsPage() -> Element {
                                             }
                                         } else {
                                             button {
-                                                class: "btn btn-small",
+                                                class: "border-0 cursor-pointer text-xs px-2 py-0.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333]",
                                                 onclick: move |_| {
                                                     remapping.set(Some(action));
                                                     listen_for_next_button(move |btn_idx| {
@@ -195,7 +195,7 @@ pub fn SettingsPage() -> Element {
                                             // Only show Clear when the action is currently bound.
                                             if button.is_some() {
                                                 button {
-                                                    class: "btn btn-small btn-ghost",
+                                                    class: "border-0 cursor-pointer text-xs px-2 py-0.5 rounded bg-transparent border border-[#333] text-[#ccc] active:bg-[#1f1f1f]",
                                                     onclick: move |_| {
                                                         config.with_mut(|c| {
                                                             if let Some(btn) = c.button_for(action) {
@@ -217,9 +217,9 @@ pub fn SettingsPage() -> Element {
 
                 // ── Reset to Defaults ─────────────────────────────────────
                 div {
-                    class: "settings-reset",
+                    class: "mt-2",
                     button {
-                        class: "btn btn-danger",
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#8b1a1a] text-[#f0f0f0] active:bg-[#a82020]",
                         onclick: move |_| {
                             config.with_mut(|c| c.reset_to_defaults());
                             config.read().save();

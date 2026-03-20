@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+@source "./src/**/*.rs";
+
+@theme {
+    --color-surface: #1a1a1a;
+    --color-surface-raised: #252525;
+    --color-accent: #e8b44a;
+    --color-accent-hover: #d4a03c;
+    --color-border: #222;
+    --color-border-subtle: #333;
+    --color-text: #f0f0f0;
+    --color-text-muted: #888;
+    --color-danger: #8b1a1a;
+    --color-danger-hover: #a82020;
+}

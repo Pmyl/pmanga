@@ -460,20 +460,20 @@ pub fn Importer(props: ImporterProps) -> Element {
     rsx! {
         // --- overlay backdrop ---
         div {
-            class: "modal-backdrop",
+            class: "fixed inset-0 bg-black/75 z-[100]",
             onclick: move |_| on_cancel.call(()),
         }
         // --- dialog box ---
         div {
-            class: "modal-dialog importer-dialog",
+            class: "bg-[#1a1a1a] rounded-xl p-5 w-[95%] max-w-2xl max-h-[90vh] flex flex-col gap-4 overflow-y-auto fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[101]",
             // Stop backdrop click from leaking through.
             onclick: move |e| e.stop_propagation(),
 
             div {
-                class: "modal-header",
-                h2 { class: "modal-title", "Import Chapters" }
+                class: "flex justify-between items-center shrink-0",
+                h2 { class: "text-base font-semibold", "Import Chapters" }
                 button {
-                    class: "btn btn-icon modal-close",
+                    class: "border-0 cursor-pointer text-lg px-2 py-1 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                     onclick: move |_| on_cancel.call(()),
                     "✕"
                 }
@@ -482,10 +482,10 @@ pub fn Importer(props: ImporterProps) -> Element {
             // Error banner
             if let Some(err) = error_msg.read().clone() {
                 div {
-                    class: "importer-error",
+                    class: "bg-[#8b1a1a]/30 border border-[#8b1a1a] rounded p-2 text-sm text-[#f0f0f0] flex justify-between items-center",
                     "⚠ {err}"
                     button {
-                        class: "btn btn-icon",
+                        class: "border-0 cursor-pointer text-lg px-2 py-1 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                         onclick: {
                             let mut error_msg = error_msg.clone();
                             move |_| *error_msg.write() = None
@@ -496,7 +496,7 @@ pub fn Importer(props: ImporterProps) -> Element {
             }
 
             div {
-                class: "modal-body",
+                class: "flex-1 overflow-y-auto",
                 match step_read {
                     // -------------------------------------------------------
                     // Step 1 — file picker
@@ -518,8 +518,8 @@ pub fn Importer(props: ImporterProps) -> Element {
                     // -------------------------------------------------------
                     ImportStep::FetchingMangaDex => rsx! {
                         div {
-                            class: "importer-loading",
-                            div { class: "spinner" }
+                            class: "flex flex-col items-center gap-3 py-8",
+                            div { class: "w-8 h-8 rounded-full border-2 border-[#333] border-t-[#e8b44a] animate-spin" }
                             p { "Searching MangaDex…" }
                         }
                     },
@@ -558,12 +558,15 @@ pub fn Importer(props: ImporterProps) -> Element {
                     // -------------------------------------------------------
                     ImportStep::Importing { done, total } => rsx! {
                         div {
-                            class: "importer-progress",
-                            p { "Importing {done} / {total} pages…" }
+                            class: "flex flex-col gap-2",
+                            p {
+                                class: "text-sm text-[#ccc]",
+                                "Importing {done} / {total} pages…"
+                            }
                             div {
-                                class: "progress-bar-track",
+                                class: "h-[3px] bg-[#333] rounded-sm overflow-hidden",
                                 div {
-                                    class: "progress-bar-fill",
+                                    class: "h-full bg-[#e8b44a] rounded-sm",
                                     style: {
                                         let pct = if total > 0 {
                                             done * 100 / total
@@ -630,10 +633,10 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
 
     rsx! {
         div {
-            class: "step-select-files",
+            class: "flex flex-col gap-3",
 
             label {
-                class: "file-input-label",
+                class: "text-sm text-[#888]",
                 "Select PDF or ZIP files"
             }
 
@@ -683,11 +686,11 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
             // If no preset manga, show editable name field.
             if !has_preset {
                 div {
-                    class: "manga-name-field",
+                    class: "flex flex-col gap-1",
                     label { "Manga name (guessed from filename)" }
                     input {
                         r#type: "text",
-                        class: "text-input",
+                        class: "bg-[#252525] border border-[#333] rounded px-2.5 py-1.5 text-[#f0f0f0] text-sm outline-none focus:border-[#e8b44a]",
                         placeholder: "e.g. One Piece",
                         value: "{manga_name_guess}",
                         oninput: move |e| *manga_name_guess.write() = e.value(),
@@ -696,9 +699,9 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
             }
 
             div {
-                class: "step-actions",
+                class: "flex gap-2 justify-end mt-2",
                 button {
-                    class: "btn btn-primary",
+                    class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
                     onclick: move |_| {
                         let entries = pdf_entries.read().clone();
 
@@ -792,20 +795,20 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
 
     rsx! {
         div {
-            class: "step-mangadex",
+            class: "flex flex-col gap-3",
             p {
-                class: "mangadex-instructions",
+                class: "text-sm text-[#888]",
                 "Select the matching manga on MangaDex to auto-fill tankobon volumes, or skip."
             }
 
             if results.is_empty() {
-                p { class: "empty-state", "No results found on MangaDex." }
+                p { class: "text-sm text-[#888]", "No results found on MangaDex." }
             } else {
-                ul { class: "mangadex-results",
+                ul { class: "flex flex-col gap-1.5 max-h-60 overflow-y-auto",
                     for (id, title) in results.iter() {
                         li {
                             button {
-                                class: "btn btn-list-item",
+                                class: "bg-[#252525] border border-[#333] rounded px-3 py-2 text-[#f0f0f0] text-left cursor-pointer text-sm active:bg-[#333] w-full",
                                 onclick: {
                                     let id = id.clone();
                                     let step = step.clone();
@@ -858,9 +861,9 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
             }
 
             div {
-                class: "step-actions",
+                class: "flex gap-2 justify-end mt-2",
                 button {
-                    class: "btn btn-secondary",
+                    class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333]",
                     onclick: {
                         let step = step.clone();
                         let manga_name_guess = manga_name_guess.clone();
@@ -919,23 +922,23 @@ fn StepReview(props: StepReviewProps) -> Element {
 
     rsx! {
         div {
-            class: "step-review",
+            class: "flex flex-col gap-3",
             p {
-                class: "review-instructions",
+                class: "text-xs text-[#888]",
                 "Review and edit the import details before proceeding."
             }
 
             div {
-                class: "review-table-wrapper",
+                class: "overflow-x-auto",
                 table {
-                    class: "review-table",
+                    class: "w-full border-collapse text-xs",
                     thead {
                         tr {
-                            th { "Filename" }
-                            th { "Manga" }
-                            th { "Chapter #" }
-                            th { "Tankobon #" }
-                            th { "" }
+                            th { class: "px-2 py-1.5 text-left text-[#888] border-b border-[#333]", "Filename" }
+                            th { class: "px-2 py-1.5 text-left text-[#888] border-b border-[#333]", "Manga" }
+                            th { class: "px-2 py-1.5 text-left text-[#888] border-b border-[#333]", "Chapter #" }
+                            th { class: "px-2 py-1.5 text-left text-[#888] border-b border-[#333]", "Tankobon #" }
+                            th { class: "px-2 py-1.5 text-left text-[#888] border-b border-[#333]", "" }
                         }
                     }
                     tbody {
@@ -943,16 +946,18 @@ fn StepReview(props: StepReviewProps) -> Element {
                             tr {
                                 key: "{i}",
                                 td {
-                                    class: "review-filename",
+                                    class: "px-1.5 py-1 border-b border-[#222]",
                                     span {
+                                        class: "text-[#888] text-xs",
                                         title: "{row.filename}",
                                         "{row.filename}"
                                     }
                                 }
                                 td {
+                                    class: "px-1.5 py-1 border-b border-[#222]",
                                     input {
                                         r#type: "text",
-                                        class: "text-input review-input",
+                                        class: "bg-[#252525] border border-[#333] rounded-sm px-1.5 py-0.5 text-[#f0f0f0] w-full text-xs",
                                         value: "{row.manga_name}",
                                         oninput: {
                                             let mut local_rows = local_rows.clone();
@@ -964,9 +969,10 @@ fn StepReview(props: StepReviewProps) -> Element {
                                     }
                                 }
                                 td {
+                                    class: "px-1.5 py-1 border-b border-[#222]",
                                     input {
                                         r#type: "text",
-                                        class: "text-input review-input review-input-narrow",
+                                        class: "bg-[#252525] border border-[#333] rounded-sm px-1.5 py-0.5 text-[#f0f0f0] w-16 text-xs",
                                         value: "{row.chapter_number}",
                                         oninput: {
                                             let mut local_rows = local_rows.clone();
@@ -978,9 +984,10 @@ fn StepReview(props: StepReviewProps) -> Element {
                                     }
                                 }
                                 td {
+                                    class: "px-1.5 py-1 border-b border-[#222]",
                                     input {
                                         r#type: "text",
-                                        class: "text-input review-input review-input-narrow",
+                                        class: "bg-[#252525] border border-[#333] rounded-sm px-1.5 py-0.5 text-[#f0f0f0] w-16 text-xs",
                                         value: "{row.tankobon_number}",
                                         placeholder: "—",
                                         oninput: {
@@ -993,8 +1000,9 @@ fn StepReview(props: StepReviewProps) -> Element {
                                     }
                                 }
                                 td {
+                                    class: "px-1.5 py-1 border-b border-[#222]",
                                     button {
-                                        class: "btn btn-icon btn-danger",
+                                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#8b1a1a] text-[#f0f0f0] active:bg-[#a82020]",
                                         title: "Remove row",
                                         onclick: {
                                             let mut local_rows = local_rows.clone();
@@ -1012,14 +1020,14 @@ fn StepReview(props: StepReviewProps) -> Element {
             }
 
             div {
-                class: "step-actions",
+                class: "flex gap-2 justify-end mt-2",
                 button {
-                    class: "btn btn-secondary",
+                    class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333]",
                     onclick: move |_| *step.write() = ImportStep::SelectFiles,
                     "← Back"
                 }
                 button {
-                    class: "btn btn-primary",
+                    class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
                     onclick: {
                         let db = db.clone();
                         let preset_manga = preset_manga.clone();

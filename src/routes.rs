@@ -43,6 +43,7 @@ fn Settings() -> Element {
 #[component]
 pub fn App() -> Element {
     rsx! {
+        document::Stylesheet { href: asset!("/assets/tailwind.css") }
         document::Stylesheet { href: asset!("/assets/main.css") }
         // JSZip must be loaded before the bridge runs.
         document::Script {

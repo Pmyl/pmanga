@@ -259,19 +259,19 @@ pub fn LibraryPage(manga_id: String) -> Element {
 
     rsx! {
         div {
-            class: "page library-page",
+            class: "h-screen flex flex-col overflow-hidden",
             div {
-                class: "library-header",
+                class: "flex items-center gap-2 px-4 py-3 border-b border-[#222] shrink-0",
                 button {
-                    class: "btn btn-back",
+                    class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                     onclick: move |_| {
                         nav.push(Route::Shelf {});
                     },
                     "← Back"
                 }
-                h1 { class: "library-title", "Library" }
+                h1 { class: "text-base font-semibold flex-1 truncate", "Library" }
                 button {
-                    class: "btn btn-primary",
+                    class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
                     onclick: move |_| {
                         *show_importer.write() = true;
                     },
@@ -280,10 +280,10 @@ pub fn LibraryPage(manga_id: String) -> Element {
             }
 
             div {
-                class: "library-grid",
+                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 p-4 overflow-y-auto flex-1",
                 if display_data.read().is_empty() {
                     p {
-                        class: "empty-state",
+                        class: "text-center text-[#888] py-12 px-4",
                         "No chapters yet. Import something to get started."
                     }
                 } else {

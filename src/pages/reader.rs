@@ -375,24 +375,24 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // ----- Render -----
     rsx! {
         div {
-            class: "page reader-page",
+            class: "fixed inset-0 bg-black flex items-center justify-center",
 
             // ---- Image area ----
             div {
-                class: "reader-image-container",
+                class: "w-full h-full flex items-center justify-center",
                 if !db_ready || (db_ready && current_blob_url.is_none() && chapter_meta.is_none()) {
                     div {
-                        class: "reader-loading",
+                        class: "text-[#555] text-base",
                         "Loading..."
                     }
                 } else if current_blob_url.is_none() {
                     div {
-                        class: "reader-loading",
+                        class: "text-[#555] text-base",
                         "Page not available"
                     }
                 } else {
                     img {
-                        class: "reader-img",
+                        class: "max-w-full max-h-screen object-contain block select-none",
                         src: current_blob_url.clone().unwrap_or_default(),
                         alt: "Manga page {page}",
                     }
@@ -447,12 +447,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             // ---- Info overlay ----
             if overlay_visible() {
                 div {
-                    class: "reader-overlay",
+                    class: "fixed top-0 left-0 right-0 z-20 bg-black/85 backdrop-blur-sm",
                     div {
-                        class: "reader-overlay-bar",
+                        class: "flex flex-col gap-1 px-4 py-3",
 
                         button {
-                            class: "btn btn-back",
+                            class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                             onclick: move |_| {
                                 navigator().push(Route::Library {
                                     manga_id: manga_id_back.clone(),
@@ -462,20 +462,18 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         }
 
                         div {
-                            class: "reader-overlay-info",
+                            class: "flex flex-wrap gap-1 text-sm text-[#ccc]",
                             span {
-                                class: "overlay-meta",
-                                span { class: "overlay-manga-name", "{manga_title}" }
+                                span { "{manga_title}" }
                                 if let Some(ref meta) = chapter_meta {
                                     if let Some(vol) = meta.tankobon_number {
-                                        span { class: "overlay-separator", " · " }
-                                        span { class: "overlay-volume", "Vol. {vol}" }
+                                        span { class: "text-[#555]", " · " }
+                                        span { "Vol. {vol}" }
                                     }
-                                    span { class: "overlay-separator", " · " }
-                                    span { class: "overlay-chapter", "Ch. {meta.chapter_number}" }
-                                    span { class: "overlay-separator", " · " }
+                                    span { class: "text-[#555]", " · " }
+                                    span { "Ch. {meta.chapter_number}" }
+                                    span { class: "text-[#555]", " · " }
                                     span {
-                                        class: "overlay-page",
                                         "p. {page + 1} / {meta.page_count}"
                                     }
                                 }
@@ -484,7 +482,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
 
                         if let Some(ref meta) = chapter_meta {
                             div {
-                                class: "reader-overlay-filename",
+                                class: "text-xs text-[#666] mt-0.5",
                                 span { "{meta.filename}" }
                             }
                         }

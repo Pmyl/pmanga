@@ -16,15 +16,18 @@ pub fn ProgressBar(props: ProgressBarProps) -> Element {
 
     rsx! {
         div {
-            class: "progress-bar-container",
+            class: "flex flex-col gap-0.5",
             div {
-                class: "progress-bar-fill",
-                style: "width: {percent:.1}%",
+                class: "h-[3px] bg-[#333] rounded-sm overflow-hidden",
+                div {
+                    class: "h-full bg-[#e8b44a] rounded-sm",
+                    style: "width: {percent:.1}%",
+                }
             }
-        }
-        small {
-            class: "progress-bar-label",
-            "{props.pages_read} / {props.total_pages} pages"
+            small {
+                class: "text-[0.65rem] text-[#888]",
+                "{props.pages_read} / {props.total_pages} pages"
+            }
         }
     }
 }

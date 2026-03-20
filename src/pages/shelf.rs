@@ -157,21 +157,21 @@ pub fn ShelfPage() -> Element {
 
     rsx! {
         div {
-            class: "page shelf-page",
+            class: "h-screen flex flex-col overflow-hidden",
             div {
-                class: "shelf-header",
-                h1 { "PManga" }
+                class: "flex items-center justify-between px-4 py-3 border-b border-[#222] shrink-0",
+                h1 { class: "text-lg font-semibold", "PManga" }
                 div {
-                    class: "shelf-header-actions",
+                    class: "flex flex-row gap-2 items-center",
                     button {
-                        class: "btn btn-icon",
+                        class: "border-0 cursor-pointer text-lg px-2 py-1 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
                         onclick: move |_| {
                             nav.push(Route::Settings {});
                         },
                         "⚙"
                     }
                     button {
-                        class: "btn btn-primary",
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
                         onclick: move |_| {
                             *show_importer.write() = true;
                         },
@@ -181,10 +181,10 @@ pub fn ShelfPage() -> Element {
             }
 
             div {
-                class: "shelf-grid",
+                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 p-4 overflow-y-auto flex-1",
                 if display_data.read().is_empty() {
                     p {
-                        class: "empty-state",
+                        class: "text-center text-[#888] py-12 px-4",
                         "No manga yet. Import something to get started."
                     }
                 } else {
