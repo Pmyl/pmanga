@@ -67,7 +67,15 @@ pub fn save_proxy_url(url: &str) {
 pub fn load_proxy_url() -> Option<String> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
-    storage.get_item(PROXY_URL_KEY).ok()?
+    if let Ok(Some(url)) = storage.get_item(PROXY_URL_KEY) {
+        if !url.trim().is_empty() {
+            return Some(url);
+        }
+    }
+    // Fall back to the current browser hostname so the app works correctly
+    // whether accessed via localhost or a LAN IP like 192.168.1.79.
+    let hostname = window.location().hostname().ok()?;
+    Some(format!("https://{}:7331", hostname))
 }
 
 #[allow(dead_code)]

@@ -53,6 +53,7 @@ web-sys = { version = "0.3", features = [
     "Response",
 ] }
 gloo-utils = "0.2"
+
 futures-channel = "0.3"
 dioxus-web = "0.7.3"
 

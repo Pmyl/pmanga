@@ -245,7 +245,7 @@ pub fn SettingsPage() -> Element {
                         input {
                             class: "flex-1 bg-[#111] border border-[#333] rounded px-3 py-2 text-sm focus:outline-none focus:border-[#555]",
                             r#type: "text",
-                            placeholder: "http://192.168.1.x:7331",
+                            placeholder: "https://192.168.1.x:7331",
                             value: "{proxy_url_input}",
                             oninput: move |e| {
                                 *proxy_url_input.write() = e.value();

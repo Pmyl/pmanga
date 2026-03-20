@@ -67,7 +67,7 @@ async fn proxy_get<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String>
 
 /// Fetch the series title and canonical series_id from the proxy.
 ///
-/// `proxy_url`  — e.g. `"http://192.168.1.10:7331"`
+/// `proxy_url`  — e.g. `"https://192.168.1.10:7331"`
 /// `series_url` — full WeebCentral URL, e.g.
 ///                `"https://weebcentral.com/series/01J76XY.../one-piece"`
 pub async fn fetch_series_meta(proxy_url: &str, series_url: &str) -> Result<WcSeriesMeta, String> {
