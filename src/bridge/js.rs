@@ -100,6 +100,48 @@ pub async fn mangadex_search(query: &str) -> Result<Vec<(String, String)>, Strin
     Ok(pairs)
 }
 
+/// Renders one page of a PDF and returns the raw image bytes (JPEG) as a
+/// `Vec<u8>`.  Callers can wrap this in a `web_sys::Blob` for storage.
+/// `page_num` is 1-based.
+pub async fn render_page_to_uint8array(
+    pdf_bytes: Vec<u8>,
+    page_num: u32,
+) -> Result<Vec<u8>, String> {
+    let mut ev = eval(
+        r#"
+        const [bytes, pageNum] = await dioxus.recv();
+        const arr = await window.pmanga_render_page_to_uint8array(new Uint8Array(bytes), pageNum);
+        dioxus.send(arr);
+        "#,
+    );
+
+    ev.send(serde_json::json!([pdf_bytes, page_num]))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let bytes: Vec<u8> = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(bytes)
+}
+
+/// Convert a `Vec<u8>` of image data into a `web_sys::Blob` with the given
+/// MIME type (e.g. `"image/jpeg"`).
+pub fn bytes_to_blob(bytes: &[u8], mime: &str) -> Result<web_sys::Blob, String> {
+    use js_sys::{Array, Uint8Array};
+
+    let uint8 = Uint8Array::from(bytes);
+    let arr = Array::new();
+    arr.push(&uint8);
+
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type(mime);
+
+    web_sys::Blob::new_with_u8_array_sequence_and_options(&arr, &opts)
+        .map_err(|e| format!("Blob construction failed: {:?}", e))
+}
+
 /// Get chapter→volume mapping from MangaDex (English chapters only).
 pub async fn mangadex_chapters(mangadex_id: &str) -> Result<Vec<ChapterVolumeEntry>, String> {
     let mut ev = eval(
