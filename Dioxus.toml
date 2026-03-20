@@ -12,6 +12,10 @@ title = "pmanga"
 style = []
 
 # Additional JavaScript files
+# Note: JSZip CDN and pmanga_bridge.js (type="module") are injected via
+# document::Script in the App component in src/routes.rs, because:
+#   1. Dioxus.toml scripts are injected as plain <script> tags, not type="module".
+#   2. JSZip must be loaded before the bridge module runs.
 script = []
 
 [web.resource.dev]

@@ -44,6 +44,15 @@ fn Settings() -> Element {
 pub fn App() -> Element {
     rsx! {
         document::Stylesheet { href: asset!("/assets/main.css") }
+        // JSZip must be loaded as a plain script before the bridge module runs.
+        document::Script {
+            src: "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+        }
+        // Bridge loaded as type="module" so it can use ES module imports (PDF.js).
+        document::Script {
+            src: asset!("/assets/pmanga_bridge.js"),
+            r#type: "module"
+        }
         Router::<Route> {}
     }
 }

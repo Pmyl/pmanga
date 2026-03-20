@@ -1,4 +1,122 @@
 //! JavaScript interop bridge.
-//! Wraps PDF.js and JSZip calls via Dioxus eval.
+//! Wraps PDF.js, JSZip, and MangaDex calls via Dioxus eval.
 
-// Implementations added in the JS bridge chunk.
+use dioxus::document::eval;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChapterVolumeEntry {
+    pub chapter: String,
+    pub volume: Option<String>,
+}
+
+/// Returns the number of pages in a PDF.
+/// `pdf_bytes` is the raw PDF data.
+pub async fn pdf_page_count(pdf_bytes: Vec<u8>) -> Result<u32, String> {
+    let mut ev = eval(
+        r#"
+        const bytes = new Uint8Array(await dioxus.recv());
+        const count = await window.pmanga_pdf_page_count(bytes);
+        dioxus.send(count);
+        "#,
+    );
+
+    ev.send(serde_json::json!(pdf_bytes))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let count: u32 = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(count)
+}
+
+/// Renders one page of a PDF. Returns a blob: URL string usable as `<img src>`.
+/// `page_num` is 1-based.
+pub async fn render_pdf_page(pdf_bytes: Vec<u8>, page_num: u32) -> Result<String, String> {
+    let mut ev = eval(
+        r#"
+        const [bytes, pageNum] = await dioxus.recv();
+        const url = await window.pmanga_render_pdf_page(new Uint8Array(bytes), pageNum);
+        dioxus.send(url);
+        "#,
+    );
+
+    ev.send(serde_json::json!([pdf_bytes, page_num]))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let url: String = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(url)
+}
+
+/// Extracts PDF files from a ZIP archive.
+/// Returns `(filename, pdf_bytes)` pairs sorted by name.
+pub async fn extract_zip(zip_bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut ev = eval(
+        r#"
+        const bytes = new Uint8Array(await dioxus.recv());
+        const entries = await window.pmanga_extract_zip(bytes);
+        // Serialize each entry as [name, Array.from(data)] so it's JSON-safe.
+        const result = entries.map(e => [e.name, Array.from(e.data)]);
+        dioxus.send(result);
+        "#,
+    );
+
+    ev.send(serde_json::json!(zip_bytes))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let raw: Vec<(String, Vec<u8>)> = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(raw)
+}
+
+/// Search MangaDex by title. Returns `(mangadex_id, display_title)` pairs.
+pub async fn mangadex_search(query: &str) -> Result<Vec<(String, String)>, String> {
+    let mut ev = eval(
+        r#"
+        const query = await dioxus.recv();
+        const results = await window.pmanga_mangadex_search(query);
+        dioxus.send(results.map(r => [r.id, r.title]));
+        "#,
+    );
+
+    ev.send(serde_json::json!(query))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let pairs: Vec<(String, String)> = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(pairs)
+}
+
+/// Get chapter→volume mapping from MangaDex (English chapters only).
+pub async fn mangadex_chapters(mangadex_id: &str) -> Result<Vec<ChapterVolumeEntry>, String> {
+    let mut ev = eval(
+        r#"
+        const id = await dioxus.recv();
+        const entries = await window.pmanga_mangadex_chapters(id);
+        dioxus.send(entries);
+        "#,
+    );
+
+    ev.send(serde_json::json!(mangadex_id))
+        .map_err(|e| format!("eval send error: {e:?}"))?;
+
+    let entries: Vec<ChapterVolumeEntry> = ev
+        .recv()
+        .await
+        .map_err(|e| format!("eval recv error: {e:?}"))?;
+
+    Ok(entries)
+}
