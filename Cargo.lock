@@ -2091,6 +2091,7 @@ name = "pmanga"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "dioxus-web",
  "futures-channel",
  "gloo-utils",
  "js-sys",

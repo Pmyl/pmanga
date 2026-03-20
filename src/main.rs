@@ -5,6 +5,9 @@ mod pages;
 mod routes;
 mod storage;
 
+use std::rc::Rc;
+
+use dioxus_web::{Config, HashHistory};
 use routes::App;
 
 fn main() {
@@ -24,5 +27,7 @@ fn main() {
         }
     }
 
-    dioxus::launch(App);
+    dioxus::LaunchBuilder::new()
+        .with_cfg(Config::new().history(Rc::new(HashHistory::new(true))))
+        .launch(App);
 }
