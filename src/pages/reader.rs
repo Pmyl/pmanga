@@ -1,84 +1,455 @@
-use crate::routes::Route;
+//! Reader page — displays a single manga page from IndexedDB with tap-zone
+//! navigation, an info overlay, and gamepad support.
+
+use std::rc::Rc;
+
 use dioxus::prelude::*;
+
+use crate::{
+    input::gamepad::use_gamepad,
+    input::{Action, config::GamepadConfig},
+    routes::Route,
+    storage::{
+        db::Db,
+        models::{ChapterId, ChapterMeta, LastOpened, MangaId, ReadingProgress},
+        progress::save_last_opened,
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Helper: convert a Blob to an object URL
+// ---------------------------------------------------------------------------
+
+fn blob_to_object_url(blob: &web_sys::Blob) -> Result<String, String> {
+    web_sys::Url::create_object_url_with_blob(blob)
+        .map_err(|e| format!("create_object_url failed: {:?}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Navigation helper
+// ---------------------------------------------------------------------------
+
+/// Navigate to `target_page` within the current chapter, or cross chapter
+/// boundaries.  Progress is saved on every successful navigation.
+fn go_to_page(
+    target_page: isize,
+    manga_id: &str,
+    chapter_id: &str,
+    chapter_pages: u32,
+    all_chapters: &[ChapterMeta],
+    current_chapter_idx: usize,
+    db: Option<Rc<Db>>,
+) {
+    let nav = navigator();
+
+    if target_page < 0 {
+        // Go to last page of the previous chapter.
+        if current_chapter_idx == 0 {
+            return; // Already at the first chapter — clamp.
+        }
+        let prev = &all_chapters[current_chapter_idx - 1];
+        let last_page = prev.page_count.saturating_sub(1) as usize;
+        save_progress_fire_and_forget(db, prev.manga_id.0.clone(), prev.id.0.clone(), last_page);
+        nav.push(Route::Reader {
+            manga_id: prev.manga_id.0.clone(),
+            chapter_id: prev.id.0.clone(),
+            page: last_page,
+        });
+    } else if target_page >= chapter_pages as isize {
+        // Go to page 0 of the next chapter.
+        if current_chapter_idx + 1 >= all_chapters.len() {
+            return; // Already at the last chapter — clamp.
+        }
+        let next = &all_chapters[current_chapter_idx + 1];
+        save_progress_fire_and_forget(db, next.manga_id.0.clone(), next.id.0.clone(), 0);
+        nav.push(Route::Reader {
+            manga_id: next.manga_id.0.clone(),
+            chapter_id: next.id.0.clone(),
+            page: 0,
+        });
+    } else {
+        let page = target_page as usize;
+        save_progress_fire_and_forget(db, manga_id.to_string(), chapter_id.to_string(), page);
+        nav.push(Route::Reader {
+            manga_id: manga_id.to_string(),
+            chapter_id: chapter_id.to_string(),
+            page,
+        });
+    }
+}
+
+/// Fire-and-forget progress save (both IndexedDB and localStorage).
+fn save_progress_fire_and_forget(
+    db: Option<Rc<Db>>,
+    manga_id: String,
+    chapter_id: String,
+    page: usize,
+) {
+    // localStorage — synchronous, do it immediately.
+    save_last_opened(&LastOpened {
+        manga_id: manga_id.clone(),
+        chapter_id: chapter_id.clone(),
+        page,
+    });
+
+    // IndexedDB — async, fire-and-forget.
+    if let Some(db) = db {
+        let progress = ReadingProgress {
+            manga_id: MangaId(manga_id),
+            chapter_id: ChapterId(chapter_id),
+            page,
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = db.save_progress(&progress).await;
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 #[component]
 pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element {
-    let overlay_visible = use_signal(|| false);
+    // ----- Signals -----
+    let mut overlay_visible = use_signal(|| false);
 
+    // Holds the open Db once the async open completes.
+    let db_signal: Signal<Option<Rc<Db>>> = use_signal(|| None);
+
+    // Blob URL for the current page image (revoked on drop — handled manually).
+    let blob_url: Signal<Option<String>> = use_signal(|| None);
+
+    // All chapters for this manga, sorted by chapter_number.
+    let chapters_signal: Signal<Vec<ChapterMeta>> = use_signal(Vec::new);
+
+    // The resolved ChapterMeta for the current chapter.
+    let chapter_meta_signal: Signal<Option<ChapterMeta>> = use_signal(|| None);
+
+    // Manga title (loaded alongside chapters).
+    let manga_title_signal: Signal<String> = use_signal(String::new);
+
+    // ----- Gamepad -----
+    let gamepad_config = use_signal(|| GamepadConfig::load());
+
+    // We need copies of signals/values for the gamepad closure.
+    let gp_manga_id = manga_id.clone();
+    let gp_chapter_id = chapter_id.clone();
+
+    use_gamepad(gamepad_config, {
+        let mut overlay_visible = overlay_visible;
+        let db_signal = db_signal;
+        let chapters_signal = chapters_signal;
+        let chapter_meta_signal = chapter_meta_signal;
+        let gp_manga_id = gp_manga_id.clone();
+        let gp_chapter_id = gp_chapter_id.clone();
+
+        move |action| {
+            let chapter_pages = chapter_meta_signal
+                .read()
+                .as_ref()
+                .map(|c| c.page_count)
+                .unwrap_or(1);
+            let all_chapters = chapters_signal.read().clone();
+            let current_idx = all_chapters
+                .iter()
+                .position(|c| c.id.0 == gp_chapter_id)
+                .unwrap_or(0);
+            let db = db_signal.read().clone();
+
+            match action {
+                Action::NextPage => {
+                    go_to_page(
+                        page as isize + 1,
+                        &gp_manga_id,
+                        &gp_chapter_id,
+                        chapter_pages,
+                        &all_chapters,
+                        current_idx,
+                        db,
+                    );
+                }
+                Action::PreviousPage => {
+                    go_to_page(
+                        page as isize - 1,
+                        &gp_manga_id,
+                        &gp_chapter_id,
+                        chapter_pages,
+                        &all_chapters,
+                        current_idx,
+                        db,
+                    );
+                }
+                Action::ToggleOverlay => {
+                    overlay_visible.set(!overlay_visible());
+                }
+                Action::GoBack => {
+                    if overlay_visible() {
+                        navigator().push(Route::Library {
+                            manga_id: gp_manga_id.clone(),
+                        });
+                    }
+                }
+                Action::Confirm => {}
+            }
+        }
+    });
+
+    // ----- Resource: open DB -----
+    {
+        let mut db_signal = db_signal;
+        use_resource(move || async move {
+            match Db::open().await {
+                Ok(db) => {
+                    *db_signal.write() = Some(Rc::new(db));
+                }
+                Err(e) => {
+                    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                        "DB open error: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    // ----- Resource: load chapters + manga meta -----
+    {
+        let db_signal = db_signal;
+        let manga_id_clone = manga_id.clone();
+        let chapter_id_clone = chapter_id.clone();
+        let mut chapters_signal = chapters_signal;
+        let mut chapter_meta_signal = chapter_meta_signal;
+        let mut manga_title_signal = manga_title_signal;
+
+        use_resource(move || {
+            let manga_id_clone = manga_id_clone.clone();
+            let chapter_id_clone = chapter_id_clone.clone();
+            async move {
+                let db = {
+                    let guard = db_signal.read();
+                    guard.clone()
+                };
+                let Some(db) = db else { return };
+
+                // Load manga title.
+                if let Ok(mangas) = db.load_all_mangas().await {
+                    if let Some(m) = mangas.into_iter().find(|m| m.id.0 == manga_id_clone) {
+                        *manga_title_signal.write() = m.title;
+                    }
+                }
+
+                // Load and sort chapters.
+                match db
+                    .load_chapters_for_manga(&MangaId(manga_id_clone.clone()))
+                    .await
+                {
+                    Ok(mut chs) => {
+                        chs.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
+                        let current = chs.iter().find(|c| c.id.0 == chapter_id_clone).cloned();
+                        *chapters_signal.write() = chs;
+                        *chapter_meta_signal.write() = current;
+                    }
+                    Err(e) => {
+                        web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                            "load_chapters error: {e}"
+                        )));
+                    }
+                }
+            }
+        });
+    }
+
+    // ----- Resource: load page blob -----
+    {
+        let db_signal = db_signal;
+        let chapter_id_for_blob = chapter_id.clone();
+        let mut blob_url = blob_url;
+
+        use_resource(move || {
+            let chapter_id_for_blob = chapter_id_for_blob.clone();
+            async move {
+                let db = {
+                    let guard = db_signal.read();
+                    guard.clone()
+                };
+                let Some(db) = db else { return };
+
+                // Revoke the previous object URL to avoid memory leaks.
+                {
+                    let old = blob_url.read().clone();
+                    if let Some(url) = old {
+                        let _ = web_sys::Url::revoke_object_url(&url);
+                    }
+                }
+
+                match db
+                    .load_page(&ChapterId(chapter_id_for_blob), page as u32)
+                    .await
+                {
+                    Ok(Some(blob)) => match blob_to_object_url(&blob) {
+                        Ok(url) => {
+                            *blob_url.write() = Some(url);
+                        }
+                        Err(e) => {
+                            web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&e));
+                            *blob_url.write() = None;
+                        }
+                    },
+                    Ok(None) => {
+                        *blob_url.write() = None;
+                    }
+                    Err(e) => {
+                        web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                            "load_page error: {e}"
+                        )));
+                        *blob_url.write() = None;
+                    }
+                }
+            }
+        });
+    }
+
+    // ----- Derived data for render -----
+    let db_ready = db_signal.read().is_some();
+    let current_blob_url = blob_url.read().clone();
+    let all_chapters = chapters_signal.read().clone();
+    let chapter_meta = chapter_meta_signal.read().clone();
+    let manga_title = manga_title_signal.read().clone();
+
+    let chapter_pages = chapter_meta.as_ref().map(|c| c.page_count).unwrap_or(1);
+    let current_chapter_idx = all_chapters
+        .iter()
+        .position(|c| c.id.0 == chapter_id)
+        .unwrap_or(0);
+
+    // ----- Closures for tap zones (capture everything needed) -----
+    let manga_id_prev = manga_id.clone();
+    let chapter_id_prev = chapter_id.clone();
+    let all_chapters_prev = all_chapters.clone();
+    let db_prev = db_signal.read().clone();
+
+    let manga_id_next = manga_id.clone();
+    let chapter_id_next = chapter_id.clone();
+    let all_chapters_next = all_chapters.clone();
+    let db_next = db_signal.read().clone();
+
+    let manga_id_back = manga_id.clone();
+
+    // ----- Render -----
     rsx! {
         div {
             class: "page reader-page",
 
-            // Page image area
+            // ---- Image area ----
             div {
                 class: "reader-image-container",
-                // TODO: render current page image from IndexedDB
-                div {
-                    class: "reader-placeholder",
-                    "Page {page}"
+                if !db_ready || (db_ready && current_blob_url.is_none() && chapter_meta.is_none()) {
+                    div {
+                        class: "reader-loading",
+                        "Loading..."
+                    }
+                } else if current_blob_url.is_none() {
+                    div {
+                        class: "reader-loading",
+                        "Page not available"
+                    }
+                } else {
+                    img {
+                        class: "reader-img",
+                        src: current_blob_url.clone().unwrap_or_default(),
+                        alt: "Manga page {page}",
+                    }
                 }
             }
 
-            // Tap zones (overlay on top of the image)
+            // ---- Tap zones ----
             div {
                 class: "reader-tap-zones",
 
-                // Left zone: previous page
+                // Left third → previous page
                 div {
                     class: "tap-zone tap-zone-left",
                     onclick: move |_| {
-                        // TODO: go to previous page
+                        go_to_page(
+                            page as isize - 1,
+                            &manga_id_prev,
+                            &chapter_id_prev,
+                            chapter_pages,
+                            &all_chapters_prev,
+                            current_chapter_idx,
+                            db_prev.clone(),
+                        );
                     }
                 }
 
-                // Top zone: toggle overlay
+                // Top strip → toggle overlay (higher z-index via CSS)
                 div {
                     class: "tap-zone tap-zone-top",
                     onclick: move |_| {
-                        let mut v = overlay_visible;
-                        v.set(!v());
+                        overlay_visible.set(!overlay_visible());
                     }
                 }
 
-                // Right zone: next page
+                // Right third → next page
                 div {
                     class: "tap-zone tap-zone-right",
                     onclick: move |_| {
-                        // TODO: go to next page
+                        go_to_page(
+                            page as isize + 1,
+                            &manga_id_next,
+                            &chapter_id_next,
+                            chapter_pages,
+                            &all_chapters_next,
+                            current_chapter_idx,
+                            db_next.clone(),
+                        );
                     }
                 }
             }
 
-            // Info overlay (top bar)
+            // ---- Info overlay ----
             if overlay_visible() {
                 div {
                     class: "reader-overlay",
                     div {
                         class: "reader-overlay-bar",
+
                         button {
                             class: "btn btn-back",
                             onclick: move |_| {
                                 navigator().push(Route::Library {
-                                    manga_id: manga_id.clone(),
+                                    manga_id: manga_id_back.clone(),
                                 });
                             },
                             "← Library"
                         }
+
                         div {
                             class: "reader-overlay-info",
-                            // TODO: fill from chapter metadata
-                            span { class: "overlay-manga-name", "Manga name" }
-                            span { class: "overlay-separator", " · " }
-                            span { class: "overlay-volume", "Vol. ?" }
-                            span { class: "overlay-separator", " · " }
-                            span { class: "overlay-chapter", "Ch. ?" }
-                            span { class: "overlay-separator", " · " }
-                            span { class: "overlay-page", "p. {page}" }
+                            span {
+                                class: "overlay-meta",
+                                span { class: "overlay-manga-name", "{manga_title}" }
+                                if let Some(ref meta) = chapter_meta {
+                                    if let Some(vol) = meta.tankobon_number {
+                                        span { class: "overlay-separator", " · " }
+                                        span { class: "overlay-volume", "Vol. {vol}" }
+                                    }
+                                    span { class: "overlay-separator", " · " }
+                                    span { class: "overlay-chapter", "Ch. {meta.chapter_number}" }
+                                    span { class: "overlay-separator", " · " }
+                                    span {
+                                        class: "overlay-page",
+                                        "p. {page + 1} / {meta.page_count}"
+                                    }
+                                }
+                            }
                         }
-                        div {
-                            class: "reader-overlay-filename",
-                            // TODO: show actual filename
-                            span { "filename.pdf" }
+
+                        if let Some(ref meta) = chapter_meta {
+                            div {
+                                class: "reader-overlay-filename",
+                                span { "{meta.filename}" }
+                            }
                         }
                     }
                 }
