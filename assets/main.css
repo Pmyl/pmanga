@@ -29,10 +29,20 @@
     grid-row: 2;
 }
 
-/* WebKit scrollbar */
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-```
+.tap-zone-middle {
+    grid-column: 2;
+    grid-row: 2;
+}
 
-Now let me update `tailwind.css` and `routes.rs`:
+/* WebKit scrollbar */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 2px;
+}

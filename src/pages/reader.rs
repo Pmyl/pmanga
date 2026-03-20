@@ -1,10 +1,13 @@
 //! Reader page — displays a single manga page from IndexedDB with tap-zone
-//! navigation, an info overlay, and gamepad support.
+//! navigation, an info overlay, gamepad support, and double-spread zoom.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 // Debounce navigation to prevent double-triggers (e.g. from touch events or
 // rapid re-renders). We use a thread-local timestamp to track the last nav.
@@ -47,6 +50,60 @@ use crate::{
 fn blob_to_object_url(blob: &web_sys::Blob) -> Result<String, String> {
     web_sys::Url::create_object_url_with_blob(blob)
         .map_err(|e| format!("create_object_url failed: {:?}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Spread zoom helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if the device is currently in portrait orientation.
+fn is_portrait() -> bool {
+    let Some(window) = web_sys::window() else {
+        return true;
+    };
+    let w = window
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let h = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    h > w
+}
+
+/// Returns the viewport width in pixels.
+fn viewport_width() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(400.0)
+}
+
+/// Returns the viewport height in pixels.
+fn viewport_height() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(800.0)
+}
+
+/// Given the image's natural dimensions, compute its rendered width when
+/// height-fitted (height = viewport height, width = auto).
+fn rendered_width_when_height_fitted(natural_w: u32, natural_h: u32) -> f64 {
+    if natural_h == 0 {
+        return 0.0;
+    }
+    let vh = viewport_height();
+    (natural_w as f64) * (vh / natural_h as f64)
+}
+
+/// Pan step: how many pixels one left/right tap moves the view.
+/// ~40% of the viewport width so 3 taps cover a double-spread.
+fn pan_step() -> f64 {
+    viewport_width() * 0.4
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +155,6 @@ fn go_to_page(
         });
     } else {
         let target = target_page as usize;
-        // Use replace() instead of push() to avoid polluting history and to
-        // prevent double-navigation issues (if called twice with same target,
-        // replace is idempotent).
         save_progress_fire_and_forget(db, manga_id.to_string(), chapter_id.to_string(), target);
         nav.replace(Route::Reader {
             manga_id: manga_id.to_string(),
@@ -110,7 +164,6 @@ fn go_to_page(
     }
 }
 
-/// Fire-and-forget progress save (both IndexedDB and localStorage).
 fn save_progress_fire_and_forget(
     db: Option<Rc<Db>>,
     manga_id: String,
@@ -146,13 +199,11 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // ----- Signals -----
     let mut overlay_visible = use_signal(|| false);
 
-    // Signals to track props reactively. We sync them directly during render
-    // by comparing with peek() and updating if different. This ensures the
-    // resource re-runs when navigating to a different page or chapter.
+    // Signals to track props reactively.
     let mut page_signal = use_signal(|| page);
     let mut chapter_id_signal = use_signal(|| chapter_id.clone());
 
-    // Sync props to signals during render (compare with peek to avoid subscription).
+    // Sync props to signals during render.
     if *page_signal.peek() != page {
         page_signal.set(page);
     }
@@ -163,7 +214,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // Holds the open Db once the async open completes.
     let db_signal: Signal<Option<Rc<Db>>> = use_signal(|| None);
 
-    // Blob URL for the current page image (revoked on drop — handled manually).
+    // Blob URL for the current page image.
     let blob_url: Signal<Option<String>> = use_signal(|| None);
 
     // All chapters for this manga, sorted by chapter_number.
@@ -172,7 +223,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // The resolved ChapterMeta for the current chapter.
     let chapter_meta_signal: Signal<Option<ChapterMeta>> = use_signal(|| None);
 
-    // Manga title (loaded alongside chapters).
+    // Manga title.
     let manga_title_signal: Signal<String> = use_signal(String::new);
 
     // Padding adjustment state.
@@ -188,10 +239,122 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         }
     }
 
+    // ----- Spread zoom state -----
+    // Natural dimensions of the current page image (width, height).
+    let img_natural_size: Signal<Option<(u32, u32)>> = use_signal(|| None);
+    // Whether we are currently in spread-zoom mode.
+    let mut spread_zoomed: Signal<bool> = use_signal(|| false);
+    // Pan offset in pixels. 0 = showing rightmost edge (manga default).
+    // Positive values = panned toward the left side of the image.
+    let mut pan_x: Signal<f64> = use_signal(|| 0.0);
+
+    // Reset zoom when page/chapter changes.
+    {
+        let mut prev_page = use_signal(|| page);
+        let mut prev_chapter = use_signal(|| chapter_id.clone());
+        if *prev_page.peek() != page || *prev_chapter.peek() != chapter_id {
+            if spread_zoomed() {
+                spread_zoomed.set(false);
+                pan_x.set(0.0);
+            }
+            prev_page.set(page);
+            prev_chapter.set(chapter_id.clone());
+        }
+    }
+
+    // Detect image natural dimensions when blob URL changes.
+    {
+        let mut img_natural_size = img_natural_size;
+        use_effect(move || {
+            let url = blob_url.read().clone();
+            img_natural_size.set(None);
+
+            if let Some(url) = url {
+                wasm_bindgen_futures::spawn_local(async move {
+                    let Ok(img) = web_sys::HtmlImageElement::new() else {
+                        return;
+                    };
+
+                    let (tx, rx) = futures_channel::oneshot::channel::<()>();
+                    let tx = RefCell::new(Some(tx));
+                    let onload = Closure::<dyn FnMut()>::new(move || {
+                        if let Some(tx) = tx.borrow_mut().take() {
+                            let _ = tx.send(());
+                        }
+                    });
+                    img.set_onload(Some(onload.as_ref().unchecked_ref()));
+                    img.set_src(&url);
+                    let _ = rx.await;
+                    drop(onload);
+
+                    let w = img.natural_width();
+                    let h = img.natural_height();
+                    if w > 0 && h > 0 {
+                        img_natural_size.set(Some((w, h)));
+                    }
+                });
+            }
+        });
+    }
+
+    // ----- Spread zoom action handler -----
+    let try_toggle_spread_zoom = {
+        let img_natural_size = img_natural_size;
+        let mut spread_zoomed = spread_zoomed;
+        let mut pan_x = pan_x;
+        move || {
+            // If currently zoomed, always allow de-zoom.
+            if spread_zoomed() {
+                spread_zoomed.set(false);
+                pan_x.set(0.0);
+                return;
+            }
+
+            // Guard: don't zoom if in landscape orientation.
+            if !is_portrait() {
+                return;
+            }
+
+            // Guard: don't zoom if image is taller than wide (not a spread).
+            if let Some((w, h)) = img_natural_size() {
+                if h >= w {
+                    return; // Portrait page — not a double spread.
+                }
+                // Activate zoom: fit height, show right side.
+                spread_zoomed.set(true);
+                pan_x.set(0.0); // 0 = rightmost edge
+            }
+        }
+    };
+
+    // ----- Pan handlers -----
+    let handle_pan_left = {
+        let mut pan_x = pan_x;
+        let img_natural_size = img_natural_size;
+        move || {
+            if let Some((nw, nh)) = img_natural_size() {
+                let rendered_w = rendered_width_when_height_fitted(nw, nh);
+                let vw = viewport_width();
+                let max_pan = (rendered_w - vw).max(0.0);
+                let step = pan_step();
+                let new_val = (pan_x() + step).min(max_pan);
+                pan_x.set(new_val);
+            }
+        }
+    };
+
+    let handle_pan_right = {
+        let mut pan_x = pan_x;
+        move || {
+            let step = pan_step();
+            let new_val = (pan_x() - step).max(0.0);
+            pan_x.set(new_val);
+        }
+    };
+
     // ----- Gamepad -----
     let gamepad_config = use_signal(|| GamepadConfig::load());
 
-    // We need copies of signals/values for the gamepad closure.
     let gp_manga_id = manga_id.clone();
     let gp_chapter_id = chapter_id.clone();
 
@@ -202,6 +365,10 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         let chapter_meta_signal = chapter_meta_signal;
         let gp_manga_id = gp_manga_id.clone();
         let gp_chapter_id = gp_chapter_id.clone();
+        let spread_zoomed = spread_zoomed;
+        let mut try_toggle_spread_zoom = try_toggle_spread_zoom.clone();
+        let mut handle_pan_left = handle_pan_left.clone();
+        let mut handle_pan_right = handle_pan_right.clone();
 
         move |action| {
             let chapter_pages = chapter_meta_signal
@@ -218,29 +385,40 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
 
             match action {
                 Action::NextPage => {
-                    go_to_page(
-                        page as isize + 1,
-                        &gp_manga_id,
-                        &gp_chapter_id,
-                        chapter_pages,
-                        &all_chapters,
-                        current_idx,
-                        db,
-                    );
+                    if spread_zoomed() {
+                        handle_pan_right();
+                    } else {
+                        go_to_page(
+                            page as isize + 1,
+                            &gp_manga_id,
+                            &gp_chapter_id,
+                            chapter_pages,
+                            &all_chapters,
+                            current_idx,
+                            db,
+                        );
+                    }
                 }
                 Action::PreviousPage => {
-                    go_to_page(
-                        page as isize - 1,
-                        &gp_manga_id,
-                        &gp_chapter_id,
-                        chapter_pages,
-                        &all_chapters,
-                        current_idx,
-                        db,
-                    );
+                    if spread_zoomed() {
+                        handle_pan_left();
+                    } else {
+                        go_to_page(
+                            page as isize - 1,
+                            &gp_manga_id,
+                            &gp_chapter_id,
+                            chapter_pages,
+                            &all_chapters,
+                            current_idx,
+                            db,
+                        );
+                    }
                 }
                 Action::ToggleOverlay => {
                     overlay_visible.set(!overlay_visible());
+                }
+                Action::ToggleSpreadZoom => {
+                    try_toggle_spread_zoom();
                 }
                 Action::GoBack => {
                     if overlay_visible() {
@@ -272,9 +450,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     }
 
     // ----- Resource: sync page with saved progress -----
-    // After the DB opens, load the saved progress for this chapter. If the
-    // saved page differs from the route param (e.g. the URL is stale because
-    // the user navigated back and then forward), redirect to the correct page.
     {
         let db_signal = db_signal;
         let chapter_id_for_progress = chapter_id.clone();
@@ -295,7 +470,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     .await
                 {
                     Ok(Some(saved)) if saved.page != page => {
-                        // Saved progress differs from the route — redirect silently.
                         navigator().replace(Route::Reader {
                             manga_id: manga_id_for_progress,
                             chapter_id: chapter_id_for_progress,
@@ -327,14 +501,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 };
                 let Some(db) = db else { return };
 
-                // Load manga title.
                 if let Ok(mangas) = db.load_all_mangas().await {
                     if let Some(m) = mangas.into_iter().find(|m| m.id.0 == manga_id_clone) {
                         *manga_title_signal.write() = m.title;
                     }
                 }
 
-                // Load and sort chapters.
                 match db
                     .load_chapters_for_manga(&MangaId(manga_id_clone.clone()))
                     .await
@@ -362,9 +534,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
 
         use_resource(move || {
             async move {
-                // Read the reactive signals to subscribe to page/chapter changes.
-                // This ensures the resource re-runs when navigating between pages
-                // or crossing chapter boundaries.
                 let current_page = page_signal();
                 let current_chapter_id = chapter_id_signal();
 
@@ -375,9 +544,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 let Some(db) = db else { return };
 
                 // Revoke the previous object URL to avoid memory leaks.
-                // Use peek() instead of read() to avoid creating a reactive
-                // subscription — otherwise writing the new URL would re-trigger
-                // this resource, causing an infinite loop.
                 {
                     let old = blob_url.peek().clone();
                     if let Some(url) = old {
@@ -425,7 +591,10 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         .position(|c| c.id.0 == chapter_id)
         .unwrap_or(0);
 
-    // ----- Closures for tap zones (capture everything needed) -----
+    let is_zoomed = spread_zoomed();
+    let current_pan_x = pan_x();
+
+    // ----- Closures for tap zones -----
     let manga_id_prev = manga_id.clone();
     let chapter_id_prev = chapter_id.clone();
     let all_chapters_prev = all_chapters.clone();
@@ -437,6 +606,11 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     let db_next = db_signal.read().clone();
 
     let manga_id_back = manga_id.clone();
+
+    // Clone handlers for tap zone use.
+    let mut tap_toggle_zoom = try_toggle_spread_zoom.clone();
+    let mut tap_pan_left = handle_pan_left.clone();
+    let mut tap_pan_right = handle_pan_right.clone();
 
     // ----- Render -----
     rsx! {
@@ -456,15 +630,33 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         class: "text-[#555] text-base",
                         "Page not available"
                     }
+                } else if is_zoomed {
+                    // ---- Spread-zoom mode: fit height, overflow width, pan ----
+                    {
+                        // The image is positioned absolutely with right:0 and
+                        // translated by pan_x to show the desired horizontal slice.
+                        let img_style = format!(
+                            "height: 100vh; width: auto; position: absolute; right: 0; transform: translateX(-{}px); user-select: none; display: block;",
+                            current_pan_x
+                        );
+                        rsx! {
+                            div {
+                                class: "w-full h-full overflow-hidden relative",
+                                img {
+                                    style: "{img_style}",
+                                    src: current_blob_url.clone().unwrap_or_default(),
+                                    alt: "Manga page {page}",
+                                }
+                            }
+                        }
+                    }
                 } else {
+                    // ---- Normal mode (with optional padding crop) ----
                     {
                         let p = padding_signal.read().effective_for_page(page);
                         let has_crop = !p.is_zero();
 
                         if has_crop {
-                            // Overflow:hidden container clips the edges.
-                            // Image is sized larger than the container by the crop
-                            // amounts so the visible portion fills the viewport.
                             let img_style = format!(
                                 "max-width: calc(100% + {}px + {}px); max-height: calc(100vh + {}px + {}px); margin: -{}px -{}px -{}px -{}px; object-fit: contain; display: block; user-select: none;",
                                 p.left, p.right, p.up, p.down,
@@ -497,23 +689,35 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             div {
                 class: "reader-tap-zones",
 
-                // Left third → previous page
+                // Left third → previous page / pan left when zoomed
                 div {
                     class: "tap-zone tap-zone-left",
                     onclick: move |_| {
-                        go_to_page(
-                            page as isize - 1,
-                            &manga_id_prev,
-                            &chapter_id_prev,
-                            chapter_pages,
-                            &all_chapters_prev,
-                            current_chapter_idx,
-                            db_prev.clone(),
-                        );
+                        if spread_zoomed() {
+                            tap_pan_left();
+                        } else {
+                            go_to_page(
+                                page as isize - 1,
+                                &manga_id_prev,
+                                &chapter_id_prev,
+                                chapter_pages,
+                                &all_chapters_prev,
+                                current_chapter_idx,
+                                db_prev.clone(),
+                            );
+                        }
                     }
                 }
 
-                // Top strip → toggle overlay (higher z-index via CSS)
+                // Middle third → toggle spread zoom
+                div {
+                    class: "tap-zone tap-zone-middle",
+                    onclick: move |_| {
+                        tap_toggle_zoom();
+                    }
+                }
+
+                // Top strip → toggle overlay
                 div {
                     class: "tap-zone tap-zone-top",
                     onclick: move |_| {
@@ -521,19 +725,23 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     }
                 }
 
-                // Right third → next page
+                // Right third → next page / pan right when zoomed
                 div {
                     class: "tap-zone tap-zone-right",
                     onclick: move |_| {
-                        go_to_page(
-                            page as isize + 1,
-                            &manga_id_next,
-                            &chapter_id_next,
-                            chapter_pages,
-                            &all_chapters_next,
-                            current_chapter_idx,
-                            db_next.clone(),
-                        );
+                        if spread_zoomed() {
+                            tap_pan_right();
+                        } else {
+                            go_to_page(
+                                page as isize + 1,
+                                &manga_id_next,
+                                &chapter_id_next,
+                                chapter_pages,
+                                &all_chapters_next,
+                                current_chapter_idx,
+                                db_next.clone(),
+                            );
+                        }
                     }
                 }
             }
@@ -547,7 +755,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         overlay_visible.set(false);
                     },
                 }
-                // Top bar content - clicking anywhere on it also dismisses
+                // Top bar content
                 div {
                     class: "fixed top-0 left-0 right-0 z-30 bg-black/85 backdrop-blur-sm cursor-pointer",
                     onclick: move |_| {
@@ -556,7 +764,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     div {
                         class: "flex items-center gap-3 px-3 py-2",
 
-                        // Back button - small icon
+                        // Back button
                         button {
                             class: "flex-shrink-0 w-8 h-8 flex items-center justify-center border-0 cursor-pointer rounded bg-transparent text-[#888] hover:text-[#ccc] active:text-[#f0f0f0]",
                             onclick: move |e| {
@@ -565,7 +773,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                                     manga_id: manga_id_back.clone(),
                                 });
                             },
-                            // Left arrow icon (SVG)
                             svg {
                                 class: "w-5 h-5",
                                 fill: "none",
@@ -602,31 +809,36 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                                 }
                             }
                         }
+
+                        // Crop / padding button (inside top bar)
+                        button {
+                            class: "flex-shrink-0 w-8 h-8 flex items-center justify-center border-0 cursor-pointer rounded bg-transparent text-[#888] hover:text-[#ccc] active:text-[#f0f0f0]",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                padding_modal_open.set(true);
+                            },
+                            svg {
+                                class: "w-5 h-5",
+                                fill: "none",
+                                stroke: "currentColor",
+                                stroke_width: "2",
+                                view_box: "0 0 24 24",
+                                path { d: "M6 2v4" }
+                                path { d: "M6 14v8" }
+                                path { d: "M2 6h4" }
+                                path { d: "M14 6h8" }
+                                path { d: "M6 6h12v12H6z" }
+                            }
+                        }
                     }
                 }
             }
 
-            // ---- Padding settings button (top-right, always visible) ----
-            div {
-                class: "fixed top-3 right-3 z-10",
-                button {
-                    class: "w-10 h-10 flex items-center justify-center rounded-full bg-black/60 text-[#888] hover:text-[#ccc] active:text-white border-0 cursor-pointer",
-                    onclick: move |_| {
-                        padding_modal_open.set(true);
-                    },
-                    // Crop icon
-                    svg {
-                        class: "w-5 h-5",
-                        fill: "none",
-                        stroke: "currentColor",
-                        stroke_width: "2",
-                        view_box: "0 0 24 24",
-                        path { d: "M6 2v4" }
-                        path { d: "M6 14v8" }
-                        path { d: "M2 6h4" }
-                        path { d: "M14 6h8" }
-                        path { d: "M6 6h12v12H6z" }
-                    }
+            // ---- Zoom indicator (visible when zoomed) ----
+            if is_zoomed {
+                div {
+                    class: "fixed bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full bg-black/70 text-[#888] text-xs select-none pointer-events-none",
+                    "Spread zoom · tap middle to exit"
                 }
             }
 

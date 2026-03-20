@@ -10,6 +10,7 @@ pub enum Action {
     NextPage,
     PreviousPage,
     ToggleOverlay,
+    ToggleSpreadZoom,
     GoBack,
     Confirm,
 }
@@ -20,6 +21,7 @@ impl Action {
             Action::NextPage,
             Action::PreviousPage,
             Action::ToggleOverlay,
+            Action::ToggleSpreadZoom,
             Action::GoBack,
             Action::Confirm,
         ]
@@ -30,6 +32,7 @@ impl Action {
             Action::NextPage => "Next Page",
             Action::PreviousPage => "Previous Page",
             Action::ToggleOverlay => "Toggle Info Overlay",
+            Action::ToggleSpreadZoom => "Toggle Spread Zoom",
             Action::GoBack => "Go Back",
             Action::Confirm => "Confirm",
         }

@@ -3,7 +3,11 @@ use std::rc::Rc;
 use crate::{
     components::{importer::Importer, manga_card::MangaCard},
     routes::Route,
-    storage::{db::Db, models::MangaId, progress::load_last_opened},
+    storage::{
+        db::Db,
+        models::MangaId,
+        progress::{is_startup_redirect_done, load_last_opened, mark_startup_redirect_done},
+    },
 };
 use dioxus::prelude::*;
 
@@ -50,15 +54,20 @@ pub fn ShelfPage() -> Element {
     });
 
     // Startup redirect: if there is a last-opened position in localStorage,
-    // navigate straight to the reader on first mount.
+    // navigate straight to the reader on first mount — but only once per
+    // browser session so that navigating *back* to the shelf does not
+    // re-trigger the redirect.
     use_effect(move || {
-        if let Some(last) = load_last_opened() {
-            let nav = navigator();
-            nav.push(Route::Reader {
-                manga_id: last.manga_id,
-                chapter_id: last.chapter_id,
-                page: last.page,
-            });
+        if !is_startup_redirect_done() {
+            mark_startup_redirect_done();
+            if let Some(last) = load_last_opened() {
+                let nav = navigator();
+                nav.push(Route::Reader {
+                    manga_id: last.manga_id,
+                    chapter_id: last.chapter_id,
+                    page: last.page,
+                });
+            }
         }
     });
 
@@ -181,7 +190,7 @@ pub fn ShelfPage() -> Element {
             }
 
             div {
-                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3 p-4 overflow-y-auto flex-1",
+                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] items-start gap-3 p-4 overflow-y-auto flex-1",
                 if display_data.read().is_empty() {
                     p {
                         class: "text-center text-[#888] py-12 px-4",

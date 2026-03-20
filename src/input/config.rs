@@ -57,6 +57,8 @@ impl Default for GamepadConfig {
         bindings.insert(1, Action::GoBack);
         // A / Cross → Confirm
         bindings.insert(0, Action::Confirm);
+        // Y / Triangle → ToggleSpreadZoom
+        bindings.insert(3, Action::ToggleSpreadZoom);
         Self { bindings }
     }
 }

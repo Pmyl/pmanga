@@ -106,27 +106,25 @@ pub fn LibraryEntryCard(props: LibraryEntryCardProps) -> Element {
                 }
             }
 
-            // Info row: label + delete button
+            // Delete button — absolutely positioned over the cover
             div {
-                class: "text-sm font-semibold text-[#f0f0f0]",
-                span {
-                    onclick: move |_| props.on_click.call(()),
-                    "{label}"
-                }
-                div {
-                    class: "absolute top-1.5 right-1.5",
-                    button {
-                        class: "border-0 cursor-pointer text-xs px-1.5 py-0.5 rounded bg-[#8b1a1a]/70 text-[#f0f0f0] active:bg-[#8b1a1a]",
-                        title: "Delete",
-                        onclick: move |_| props.on_delete.call(()),
-                        "🗑"
-                    }
+                class: "absolute top-1.5 right-1.5",
+                button {
+                    class: "border-0 cursor-pointer text-xs px-1.5 py-0.5 rounded bg-[#8b1a1a]/70 text-[#f0f0f0] active:bg-[#8b1a1a]",
+                    title: "Delete",
+                    onclick: move |_| props.on_delete.call(()),
+                    "🗑"
                 }
             }
 
-            // Progress bar — clicking opens the reader
+            // Label + progress bar — matches MangaCard's p-2 layout
             div {
+                class: "p-2 flex flex-col gap-1",
                 onclick: move |_| props.on_click.call(()),
+                p {
+                    class: "text-xs font-medium truncate",
+                    "{label}"
+                }
                 ProgressBar {
                     value: props.progress_value,
                     pages_read: props.pages_read,
