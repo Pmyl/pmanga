@@ -505,9 +505,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         overlay_visible.set(false);
                     },
                 }
-                // Top bar content
+                // Top bar content - clicking anywhere on it also dismisses
                 div {
-                    class: "fixed top-0 left-0 right-0 z-30 bg-black/85 backdrop-blur-sm",
+                    class: "fixed top-0 left-0 right-0 z-30 bg-black/85 backdrop-blur-sm cursor-pointer",
+                    onclick: move |_| {
+                        overlay_visible.set(false);
+                    },
                     div {
                         class: "flex items-center gap-3 px-3 py-2",
 
