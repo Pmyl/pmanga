@@ -298,6 +298,7 @@ fn lookup_tankobon_from_mangadex(chapter_str: &str, entries: &[ChapterVolumeEntr
 // ---------------------------------------------------------------------------
 
 /// Simple CSV row: manga_title, chapter_number, tankobon_number
+#[derive(Clone)]
 struct TankobonRow {
     manga_title: String,
     chapter: String,
@@ -419,8 +420,40 @@ pub fn Importer(props: ImporterProps) -> Element {
     // MangaDex chapter-to-volume entries collected in step 2.
     let mdex_entries: Signal<Vec<ChapterVolumeEntry>> = use_signal(Vec::new);
 
+    // Parsed rows from tankobon_db.csv fetched on mount (empty if absent/unreachable).
+    let csv_rows: Signal<Vec<TankobonRow>> = use_signal(Vec::new);
+
     // Error message shown to the user.
     let error_msg: Signal<Option<String>> = use_signal(|| None);
+
+    // Fetch tankobon_db.csv once on mount as an offline fallback for tankobon lookup.
+    {
+        let mut csv_rows = csv_rows;
+        use_effect(move || {
+            wasm_bindgen_futures::spawn_local(async move {
+                let fetched = dioxus::document::eval(
+                    r#"
+                    try {
+                        const resp = await fetch('/tankobon_db.csv');
+                        if (resp.ok) {
+                            dioxus.send(await resp.text());
+                        } else {
+                            dioxus.send(null);
+                        }
+                    } catch (_) {
+                        dioxus.send(null);
+                    }
+                    "#,
+                )
+                .recv::<Option<String>>()
+                .await;
+
+                if let Ok(Some(text)) = fetched {
+                    *csv_rows.write() = parse_tankobon_csv(&text);
+                }
+            });
+        });
+    }
 
     let step_read = step.read().clone();
 
@@ -476,6 +509,7 @@ pub fn Importer(props: ImporterProps) -> Element {
                             pdf_entries,
                             mdex_entries,
                             error_msg,
+                            csv_rows,
                         }
                     },
 
@@ -501,6 +535,7 @@ pub fn Importer(props: ImporterProps) -> Element {
                             pdf_entries,
                             mdex_entries,
                             error_msg,
+                            csv_rows,
                         }
                     },
 
@@ -559,6 +594,7 @@ struct StepSelectFilesProps {
     pdf_entries: Signal<Vec<(String, Vec<u8>)>>,
     mdex_entries: Signal<Vec<ChapterVolumeEntry>>,
     error_msg: Signal<Option<String>>,
+    csv_rows: Signal<Vec<TankobonRow>>,
 }
 
 impl PartialEq for StepSelectFilesProps {
@@ -571,6 +607,7 @@ impl PartialEq for StepSelectFilesProps {
 fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
     let StepSelectFilesProps {
         preset_manga,
+        csv_rows,
         mut step,
         mut manga_name_guess,
         pdf_entries,
@@ -678,7 +715,8 @@ fn StepSelectFiles(props: StepSelectFilesProps) -> Element {
                         if preset.is_some() {
                             // Skip MangaDex — go straight to review.
                             let name = preset.as_ref().unwrap().title.clone();
-                            let rows = build_rows(entries, &name, &[], &[]);
+                            let csv = csv_rows.read().clone();
+                            let rows = build_rows(entries, &name, &[], &csv);
                             *mdex_entries.write() = vec![];
                             *step.write() = ImportStep::Review { rows };
                         } else {
@@ -731,6 +769,7 @@ struct StepSelectMangaDexProps {
     pdf_entries: Signal<Vec<(String, Vec<u8>)>>,
     mdex_entries: Signal<Vec<ChapterVolumeEntry>>,
     error_msg: Signal<Option<String>>,
+    csv_rows: Signal<Vec<TankobonRow>>,
 }
 
 impl PartialEq for StepSelectMangaDexProps {
@@ -748,6 +787,7 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
         pdf_entries,
         mdex_entries,
         error_msg,
+        csv_rows,
     } = props;
 
     rsx! {
@@ -792,8 +832,9 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
                                                         pdf_entries.read().clone();
                                                     let mdex =
                                                         mdex_entries.read().clone();
+                                                    let csv = csv_rows.read().clone();
                                                     let rows = build_rows(
-                                                        pdf_ents, &name, &mdex, &[],
+                                                        pdf_ents, &name, &mdex, &csv,
                                                     );
                                                     *step.write() =
                                                         ImportStep::Review { rows };
@@ -830,7 +871,8 @@ fn StepSelectMangaDex(props: StepSelectMangaDexProps) -> Element {
                             let name = manga_name_guess.read().clone();
                             let entries = pdf_entries.read().clone();
                             let mdex = mdex_entries.read().clone();
-                            let rows = build_rows(entries, &name, &mdex, &[]);
+                            let csv = csv_rows.read().clone();
+                            let rows = build_rows(entries, &name, &mdex, &csv);
                             *step.write() = ImportStep::Review { rows };
                         }
                     },

@@ -192,6 +192,21 @@ pub fn SettingsPage() -> Element {
                                                 },
                                                 "Remap"
                                             }
+                                            // Only show Clear when the action is currently bound.
+                                            if button.is_some() {
+                                                button {
+                                                    class: "btn btn-small btn-ghost",
+                                                    onclick: move |_| {
+                                                        config.with_mut(|c| {
+                                                            if let Some(btn) = c.button_for(action) {
+                                                                c.clear_binding(btn.0);
+                                                            }
+                                                        });
+                                                        config.read().save();
+                                                    },
+                                                    "✕ Clear"
+                                                }
+                                            }
                                         }
                                     }
                                 }

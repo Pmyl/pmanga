@@ -95,6 +95,7 @@ impl GamepadConfig {
     }
 
     /// Remove the binding for a button index.
+    #[allow(dead_code)]
     pub fn clear_binding(&mut self, button: usize) {
         self.bindings.remove(&button);
     }

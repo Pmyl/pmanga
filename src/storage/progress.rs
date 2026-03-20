@@ -25,6 +25,7 @@ pub fn load_last_opened() -> Option<LastOpened> {
     serde_json::from_str(&json).ok()
 }
 
+#[allow(dead_code)]
 pub fn clear_last_opened() {
     let Some(window) = web_sys::window() else {
         return;

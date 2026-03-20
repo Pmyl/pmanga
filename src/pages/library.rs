@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::storage::progress::clear_last_opened;
 use dioxus::prelude::*;
 
 use crate::{
@@ -233,6 +234,9 @@ pub fn LibraryPage(manga_id: String) -> Element {
                         if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
                             web_sys::console::error_1(&format!("delete_manga error: {e}").into());
                         }
+                        // Clear the last-opened position so the app doesn't
+                        // try to reopen a page from a manga that no longer exists.
+                        clear_last_opened();
                         // Navigate back to shelf since the manga is gone.
                         navigator().push(Route::Shelf {});
                         return;

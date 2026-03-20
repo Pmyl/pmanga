@@ -212,6 +212,43 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         });
     }
 
+    // ----- Resource: sync page with saved progress -----
+    // After the DB opens, load the saved progress for this chapter. If the
+    // saved page differs from the route param (e.g. the URL is stale because
+    // the user navigated back and then forward), redirect to the correct page.
+    {
+        let db_signal = db_signal;
+        let chapter_id_for_progress = chapter_id.clone();
+        let manga_id_for_progress = manga_id.clone();
+
+        use_resource(move || {
+            let chapter_id_for_progress = chapter_id_for_progress.clone();
+            let manga_id_for_progress = manga_id_for_progress.clone();
+            async move {
+                let db = {
+                    let guard = db_signal.read();
+                    guard.clone()
+                };
+                let Some(db) = db else { return };
+
+                match db
+                    .load_progress(&ChapterId(chapter_id_for_progress.clone()))
+                    .await
+                {
+                    Ok(Some(saved)) if saved.page != page => {
+                        // Saved progress differs from the route — redirect silently.
+                        navigator().replace(Route::Reader {
+                            manga_id: manga_id_for_progress,
+                            chapter_id: chapter_id_for_progress,
+                            page: saved.page,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
     // ----- Resource: load chapters + manga meta -----
     {
         let db_signal = db_signal;

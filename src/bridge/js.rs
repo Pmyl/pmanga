@@ -33,28 +33,6 @@ pub async fn pdf_page_count(pdf_bytes: Vec<u8>) -> Result<u32, String> {
     Ok(count)
 }
 
-/// Renders one page of a PDF. Returns a blob: URL string usable as `<img src>`.
-/// `page_num` is 1-based.
-pub async fn render_pdf_page(pdf_bytes: Vec<u8>, page_num: u32) -> Result<String, String> {
-    let mut ev = eval(
-        r#"
-        const [bytes, pageNum] = await dioxus.recv();
-        const url = await window.pmanga_render_pdf_page(new Uint8Array(bytes), pageNum);
-        dioxus.send(url);
-        "#,
-    );
-
-    ev.send(serde_json::json!([pdf_bytes, page_num]))
-        .map_err(|e| format!("eval send error: {e:?}"))?;
-
-    let url: String = ev
-        .recv()
-        .await
-        .map_err(|e| format!("eval recv error: {e:?}"))?;
-
-    Ok(url)
-}
-
 /// Extracts PDF files from a ZIP archive.
 /// Returns `(filename, pdf_bytes)` pairs sorted by name.
 pub async fn extract_zip(zip_bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, String> {
