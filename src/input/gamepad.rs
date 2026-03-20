@@ -67,7 +67,7 @@ pub fn use_gamepad(config: Signal<GamepadConfig>, on_action: impl FnMut(Action) 
         // Clone the Rc — the async task gets its own reference-counted handle.
         let on_action = on_action.clone();
 
-        wasm_bindgen_futures::spawn_local(async move {
+        spawn(async move {
             // Per-gamepad button state, keyed by gamepad index.
             let mut states: HashMap<usize, ButtonState> = HashMap::new();
 

@@ -356,7 +356,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     let gamepad_config = use_signal(|| GamepadConfig::load());
 
     let gp_manga_id = manga_id.clone();
-    let gp_chapter_id = chapter_id.clone();
 
     use_gamepad(gamepad_config, {
         let mut overlay_visible = overlay_visible;
@@ -364,13 +363,17 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         let chapters_signal = chapters_signal;
         let chapter_meta_signal = chapter_meta_signal;
         let gp_manga_id = gp_manga_id.clone();
-        let gp_chapter_id = gp_chapter_id.clone();
         let spread_zoomed = spread_zoomed;
         let mut try_toggle_spread_zoom = try_toggle_spread_zoom.clone();
         let mut handle_pan_left = handle_pan_left.clone();
         let mut handle_pan_right = handle_pan_right.clone();
 
         move |action| {
+            // Read current reactive values so the callback is never stale,
+            // even though the async polling loop was spawned on first render.
+            let current_page = page_signal();
+            let current_chapter_id = chapter_id_signal();
+
             let chapter_pages = chapter_meta_signal
                 .read()
                 .as_ref()
@@ -379,7 +382,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             let all_chapters = chapters_signal.read().clone();
             let current_idx = all_chapters
                 .iter()
-                .position(|c| c.id.0 == gp_chapter_id)
+                .position(|c| c.id.0 == current_chapter_id)
                 .unwrap_or(0);
             let db = db_signal.read().clone();
 
@@ -389,9 +392,9 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         handle_pan_right();
                     } else {
                         go_to_page(
-                            page as isize + 1,
+                            current_page as isize + 1,
                             &gp_manga_id,
-                            &gp_chapter_id,
+                            &current_chapter_id,
                             chapter_pages,
                             &all_chapters,
                             current_idx,
@@ -404,9 +407,9 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         handle_pan_left();
                     } else {
                         go_to_page(
-                            page as isize - 1,
+                            current_page as isize - 1,
                             &gp_manga_id,
-                            &gp_chapter_id,
+                            &current_chapter_id,
                             chapter_pages,
                             &all_chapters,
                             current_idx,
