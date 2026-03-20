@@ -449,10 +449,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     }
                 } else if is_zoomed {
                     // Spread-zoom mode: fit height, overflow width, pan horizontally.
+                    // max-width: none overrides Tailwind/browser defaults that would
+                    // otherwise constrain width and cause aspect-ratio stretching.
                     {
                         let img_style = format!(
-                            "height: 100vh; width: auto; position: absolute; right: 0; \
-                             transform: translateX(-{}px); user-select: none; display: block;",
+                            "height: 100vh; width: auto; max-width: none; position: absolute; \
+                             right: 0; transform: translateX({}px); user-select: none; display: block;",
                             current_pan_x
                         );
                         rsx! {
@@ -506,7 +508,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             div {
                 class: "reader-tap-zones",
 
-                // Left third → previous page or pan left when zoomed.
+                // Left third → previous page; in zoom, pan right (back toward right edge for RTL).
                 div {
                     class: "tap-zone tap-zone-left",
                     onclick: move |_| {
@@ -538,7 +540,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     onclick: move |_| overlay_visible.set(!overlay_visible()),
                 }
 
-                // Right third → next page or pan right when zoomed.
+                // Right third → next page; in zoom, pan left (advance toward left side for RTL).
                 div {
                     class: "tap-zone tap-zone-right",
                     onclick: move |_| {
@@ -568,14 +570,6 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     page,
                     on_close: move |_| overlay_visible.set(false),
                     on_open_padding: move |_| padding_modal_open.set(true),
-                }
-            }
-
-            // ---- Spread-zoom indicator ----
-            if is_zoomed {
-                div {
-                    class: "fixed bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full bg-black/70 text-[#888] text-xs select-none pointer-events-none",
-                    "Spread zoom · tap middle to exit"
                 }
             }
 

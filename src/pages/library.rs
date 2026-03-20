@@ -643,7 +643,9 @@ pub fn LibraryPage(manga_id: String) -> Element {
             }
 
             div {
-                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] items-start gap-3 p-4 overflow-y-auto flex-1",
+                class: "overflow-y-auto flex-1",
+                div {
+                class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] items-start gap-3 p-4",
                 if display_data.read().is_empty() {
                     p {
                         class: "text-center text-[#888] py-12 px-4",
@@ -678,6 +680,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
                             }
                         }
                     }
+                }
                 }
             }
 
