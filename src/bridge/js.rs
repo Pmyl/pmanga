@@ -5,11 +5,25 @@
 //! - ZIP extraction (JSZip)
 //!
 //! Everything else (HTTP calls, JSON parsing) is done in pure Rust.
+//!
+//! PDF and ZIP calls go directly through js_sys (calling window.pmanga_* globals)
+//! rather than dioxus::document::eval. eval() requires the Dioxus runtime to be
+//! active on the current task — it panics when called from spawn_local during an
+//! import loop because the runtime RefCell is already borrowed by the render cycle.
+//! Direct js_sys calls have zero dependency on the Dioxus runtime.
 
-use dioxus::document::eval;
+use js_sys::{Array, Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
+
+// reqwest is used for all MangaDex HTTP calls — it handles CORS correctly on WASM
+// by compiling to the browser's fetch API with the right mode automatically.
+static MANGADEX_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn mangadex_client() -> &'static reqwest::Client {
+    MANGADEX_CLIENT.get_or_init(reqwest::Client::new)
+}
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -25,40 +39,59 @@ pub struct ChapterVolumeEntry {
 // PDF (requires PDF.js + Canvas — must stay in JS)
 // ---------------------------------------------------------------------------
 
+/// Get a named function from `window`, returning a clear error if absent.
+fn window_fn(name: &str) -> Result<js_sys::Function, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let val = js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str(name))
+        .map_err(|_| format!("window.{name} not found"))?;
+    val.dyn_into::<js_sys::Function>()
+        .map_err(|_| format!("window.{name} is not a function"))
+}
+
 /// Returns the number of pages in a PDF.
+/// Calls window.pmanga_pdf_page_count(Uint8Array) directly — no eval/runtime needed.
 pub async fn pdf_page_count(pdf_bytes: Vec<u8>) -> Result<u32, String> {
-    let mut ev = eval(
-        r#"
-        const bytes = new Uint8Array(await dioxus.recv());
-        const count = await window.pmanga_pdf_page_count(bytes);
-        dioxus.send(count);
-        "#,
-    );
-    ev.send(serde_json::json!(pdf_bytes))
-        .map_err(|e| format!("eval send error: {e:?}"))?;
-    ev.recv::<u32>()
+    let func = window_fn("pmanga_pdf_page_count")?;
+    let uint8 = Uint8Array::from(pdf_bytes.as_slice());
+    let promise: Promise = func
+        .call1(&wasm_bindgen::JsValue::NULL, &uint8)
+        .map_err(|e| format!("pmanga_pdf_page_count call failed: {e:?}"))?
+        .dyn_into()
+        .map_err(|_| "pmanga_pdf_page_count did not return a Promise".to_string())?;
+    let result = JsFuture::from(promise)
         .await
-        .map_err(|e| format!("eval recv error: {e:?}"))
+        .map_err(|e| format!("pmanga_pdf_page_count rejected: {e:?}"))?;
+    result
+        .as_f64()
+        .map(|n| n as u32)
+        .ok_or_else(|| "pmanga_pdf_page_count returned non-number".to_string())
 }
 
 /// Renders one PDF page and returns raw JPEG bytes.
 /// `page_num` is 1-based.
+/// Calls window.pmanga_render_page_to_uint8array(Uint8Array, number) directly.
 pub async fn render_page_to_uint8array(
     pdf_bytes: Vec<u8>,
     page_num: u32,
 ) -> Result<Vec<u8>, String> {
-    let mut ev = eval(
-        r#"
-        const [bytes, pageNum] = await dioxus.recv();
-        const arr = await window.pmanga_render_page_to_uint8array(new Uint8Array(bytes), pageNum);
-        dioxus.send(arr);
-        "#,
-    );
-    ev.send(serde_json::json!([pdf_bytes, page_num]))
-        .map_err(|e| format!("eval send error: {e:?}"))?;
-    ev.recv::<Vec<u8>>()
+    let func = window_fn("pmanga_render_page_to_uint8array")?;
+    let uint8 = Uint8Array::from(pdf_bytes.as_slice());
+    let page_js = wasm_bindgen::JsValue::from_f64(page_num as f64);
+    let promise: Promise = func
+        .call2(&wasm_bindgen::JsValue::NULL, &uint8, &page_js)
+        .map_err(|e| format!("pmanga_render_page_to_uint8array call failed: {e:?}"))?
+        .dyn_into()
+        .map_err(|_| "pmanga_render_page_to_uint8array did not return a Promise".to_string())?;
+    let result = JsFuture::from(promise)
         .await
-        .map_err(|e| format!("eval recv error: {e:?}"))
+        .map_err(|e| format!("pmanga_render_page_to_uint8array rejected: {e:?}"))?;
+    // The JS function returns a plain JS Array of numbers.
+    let arr: Array = result
+        .dyn_into()
+        .map_err(|_| "pmanga_render_page_to_uint8array result is not an Array".to_string())?;
+    Ok((0..arr.length())
+        .map(|i| arr.get(i).as_f64().unwrap_or(0.0) as u8)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -67,20 +100,40 @@ pub async fn render_page_to_uint8array(
 
 /// Extracts PDF files from a ZIP archive.
 /// Returns `(filename, pdf_bytes)` pairs sorted by name.
+/// Calls window.pmanga_extract_zip(Uint8Array) directly — no eval/runtime needed.
 pub async fn extract_zip(zip_bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let mut ev = eval(
-        r#"
-        const bytes = new Uint8Array(await dioxus.recv());
-        const entries = await window.pmanga_extract_zip(bytes);
-        const result = entries.map(e => [e.name, Array.from(e.data)]);
-        dioxus.send(result);
-        "#,
-    );
-    ev.send(serde_json::json!(zip_bytes))
-        .map_err(|e| format!("eval send error: {e:?}"))?;
-    ev.recv::<Vec<(String, Vec<u8>)>>()
+    let func = window_fn("pmanga_extract_zip")?;
+    let uint8 = Uint8Array::from(zip_bytes.as_slice());
+    let promise: Promise = func
+        .call1(&wasm_bindgen::JsValue::NULL, &uint8)
+        .map_err(|e| format!("pmanga_extract_zip call failed: {e:?}"))?
+        .dyn_into()
+        .map_err(|_| "pmanga_extract_zip did not return a Promise".to_string())?;
+    let result = JsFuture::from(promise)
         .await
-        .map_err(|e| format!("eval recv error: {e:?}"))
+        .map_err(|e| format!("pmanga_extract_zip rejected: {e:?}"))?;
+    // Result is Array<[name: string, data: Array<number>]>
+    // The JS bridge returns entries as {name, data} objects.
+    // We read name via Reflect and data as a Uint8Array.
+    let entries: Array = result
+        .dyn_into()
+        .map_err(|_| "pmanga_extract_zip result is not an Array".to_string())?;
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+    for i in 0..entries.length() {
+        let entry = entries.get(i);
+        let name_val = js_sys::Reflect::get(&entry, &wasm_bindgen::JsValue::from_str("name"))
+            .map_err(|_| "entry missing 'name'".to_string())?;
+        let name = name_val
+            .as_string()
+            .ok_or_else(|| "entry 'name' is not a string".to_string())?;
+        let data_val = js_sys::Reflect::get(&entry, &wasm_bindgen::JsValue::from_str("data"))
+            .map_err(|_| "entry missing 'data'".to_string())?;
+        let data_arr: Uint8Array = data_val
+            .dyn_into()
+            .map_err(|_| "entry 'data' is not a Uint8Array".to_string())?;
+        out.push((name, data_arr.to_vec()));
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +153,7 @@ pub fn bytes_to_blob(bytes: &[u8], mime: &str) -> Result<web_sys::Blob, String> 
 }
 
 // ---------------------------------------------------------------------------
-// MangaDex API (pure Rust web_sys fetch — no JS eval needed)
+// MangaDex API (reqwest — handles CORS on WASM automatically)
 // ---------------------------------------------------------------------------
 
 const MANGADEX_BASE: &str = "https://api.mangadex.org";
@@ -108,50 +161,36 @@ const MANGADEX_BASE: &str = "https://api.mangadex.org";
 /// All content ratings we want to include in MangaDex queries.
 const CONTENT_RATINGS: &[&str] = &["safe", "suggestive", "erotica", "pornographic"];
 
-/// Perform a GET request and deserialize the JSON body.
+/// Perform a GET request and deserialize the JSON body via reqwest.
 /// Returns `Err` on network failure or non-2xx status.
 async fn fetch_json(url: &str) -> Result<serde_json::Value, String> {
-    let window = web_sys::window().ok_or("no window")?;
-    let response_val = JsFuture::from(window.fetch_with_str(url))
+    let response = mangadex_client()
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
         .await
-        .map_err(|e| format!("fetch failed: {e:?}"))?;
-    let response: web_sys::Response = response_val
-        .dyn_into()
-        .map_err(|_| "fetch result was not a Response".to_string())?;
-    if !response.ok() {
+        .map_err(|e| format!("fetch failed: {e}"))?;
+
+    if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    let text_val = JsFuture::from(
-        response
-            .text()
-            .map_err(|e| format!("response.text() failed: {e:?}"))?,
-    )
-    .await
-    .map_err(|e| format!("text promise failed: {e:?}"))?;
 
-    let text = text_val
-        .as_string()
-        .ok_or("response body was not a string")?;
-    serde_json::from_str(&text).map_err(|e| format!("JSON deserialize failed: {e}"))
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("JSON deserialize failed: {e}"))
 }
 
 /// Build a MangaDex query URL, appending all content rating params.
 fn mangadex_url(path: &str, params: &[(&str, &str)]) -> String {
-    let mut parts: Vec<String> = params
+    let mut query = params
         .iter()
-        .map(|(k, v)| format!("{}={}", k, js_encode(v)))
-        .collect();
+        .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
+        .collect::<Vec<_>>();
     for rating in CONTENT_RATINGS {
-        parts.push(format!("contentRating%5B%5D={}", rating));
+        query.push(format!("contentRating%5B%5D={}", rating));
     }
-    format!("{MANGADEX_BASE}{path}?{}", parts.join("&"))
-}
-
-/// Percent-encode a string using JS `encodeURIComponent`.
-fn js_encode(s: &str) -> String {
-    js_sys::encode_uri_component(s)
-        .as_string()
-        .unwrap_or_else(|| s.to_string())
+    format!("{MANGADEX_BASE}{path}?{}", query.join("&"))
 }
 
 /// Search manga by title on MangaDex. Returns up to 10 `(id, title)` pairs.

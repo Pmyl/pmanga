@@ -1,9 +1,32 @@
 //! Reader page — displays a single manga page from IndexedDB with tap-zone
 //! navigation, an info overlay, and gamepad support.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+
+// Debounce navigation to prevent double-triggers (e.g. from touch events or
+// rapid re-renders). We use a thread-local timestamp to track the last nav.
+thread_local! {
+    static LAST_NAV_MS: Cell<f64> = const { Cell::new(0.0) };
+}
+
+/// Returns true if enough time has passed since the last navigation (100ms).
+/// Also updates the timestamp if returning true.
+fn nav_debounce_ok() -> bool {
+    let now = js_sys::Date::now();
+
+    LAST_NAV_MS.with(|last| {
+        let prev = last.get();
+        if now - prev > 100.0 {
+            last.set(now);
+            true
+        } else {
+            false
+        }
+    })
+}
 
 use crate::{
     input::gamepad::use_gamepad,
@@ -40,6 +63,11 @@ fn go_to_page(
     current_chapter_idx: usize,
     db: Option<Rc<Db>>,
 ) {
+    // Debounce to prevent double navigation from rapid clicks or re-renders.
+    if !nav_debounce_ok() {
+        return;
+    }
+
     let nav = navigator();
 
     if target_page < 0 {
@@ -50,7 +78,7 @@ fn go_to_page(
         let prev = &all_chapters[current_chapter_idx - 1];
         let last_page = prev.page_count.saturating_sub(1) as usize;
         save_progress_fire_and_forget(db, prev.manga_id.0.clone(), prev.id.0.clone(), last_page);
-        nav.push(Route::Reader {
+        nav.replace(Route::Reader {
             manga_id: prev.manga_id.0.clone(),
             chapter_id: prev.id.0.clone(),
             page: last_page,
@@ -62,18 +90,21 @@ fn go_to_page(
         }
         let next = &all_chapters[current_chapter_idx + 1];
         save_progress_fire_and_forget(db, next.manga_id.0.clone(), next.id.0.clone(), 0);
-        nav.push(Route::Reader {
+        nav.replace(Route::Reader {
             manga_id: next.manga_id.0.clone(),
             chapter_id: next.id.0.clone(),
             page: 0,
         });
     } else {
-        let page = target_page as usize;
-        save_progress_fire_and_forget(db, manga_id.to_string(), chapter_id.to_string(), page);
-        nav.push(Route::Reader {
+        let target = target_page as usize;
+        // Use replace() instead of push() to avoid polluting history and to
+        // prevent double-navigation issues (if called twice with same target,
+        // replace is idempotent).
+        save_progress_fire_and_forget(db, manga_id.to_string(), chapter_id.to_string(), target);
+        nav.replace(Route::Reader {
             manga_id: manga_id.to_string(),
             chapter_id: chapter_id.to_string(),
-            page,
+            page: target,
         });
     }
 }
@@ -113,6 +144,20 @@ fn save_progress_fire_and_forget(
 pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element {
     // ----- Signals -----
     let mut overlay_visible = use_signal(|| false);
+
+    // Signals to track props reactively. We sync them directly during render
+    // by comparing with peek() and updating if different. This ensures the
+    // resource re-runs when navigating to a different page or chapter.
+    let mut page_signal = use_signal(|| page);
+    let mut chapter_id_signal = use_signal(|| chapter_id.clone());
+
+    // Sync props to signals during render (compare with peek to avoid subscription).
+    if *page_signal.peek() != page {
+        page_signal.set(page);
+    }
+    if *chapter_id_signal.peek() != chapter_id {
+        chapter_id_signal.set(chapter_id.clone());
+    }
 
     // Holds the open Db once the async open completes.
     let db_signal: Signal<Option<Rc<Db>>> = use_signal(|| None);
@@ -299,12 +344,16 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // ----- Resource: load page blob -----
     {
         let db_signal = db_signal;
-        let chapter_id_for_blob = chapter_id.clone();
         let mut blob_url = blob_url;
 
         use_resource(move || {
-            let chapter_id_for_blob = chapter_id_for_blob.clone();
             async move {
+                // Read the reactive signals to subscribe to page/chapter changes.
+                // This ensures the resource re-runs when navigating between pages
+                // or crossing chapter boundaries.
+                let current_page = page_signal();
+                let current_chapter_id = chapter_id_signal();
+
                 let db = {
                     let guard = db_signal.read();
                     guard.clone()
@@ -312,15 +361,18 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 let Some(db) = db else { return };
 
                 // Revoke the previous object URL to avoid memory leaks.
+                // Use peek() instead of read() to avoid creating a reactive
+                // subscription — otherwise writing the new URL would re-trigger
+                // this resource, causing an infinite loop.
                 {
-                    let old = blob_url.read().clone();
+                    let old = blob_url.peek().clone();
                     if let Some(url) = old {
                         let _ = web_sys::Url::revoke_object_url(&url);
                     }
                 }
 
                 match db
-                    .load_page(&ChapterId(chapter_id_for_blob), page as u32)
+                    .load_page(&ChapterId(current_chapter_id), current_page as u32)
                     .await
                 {
                     Ok(Some(blob)) => match blob_to_object_url(&blob) {
