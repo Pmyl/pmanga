@@ -39,6 +39,17 @@ struct PageItem {
     height: u32,
 }
 
+/// Parse a chapter number from a span text such as "Chapter 1", "Act 42", or
+/// "1.5".  The strategy is: split by whitespace, take the last token, and
+/// attempt to parse it as an `f32`.  Returns `None` if the last token is not
+/// a valid floating-point number.
+fn parse_chapter_number(text: &str) -> Option<f32> {
+    text.trim()
+        .split_whitespace()
+        .last()
+        .and_then(|last| last.parse::<f32>().ok())
+}
+
 fn extract_series_id(url: &str) -> Option<String> {
     // e.g. https://weebcentral.com/series/01J76XY7E9FNDZ1DBBM6PBJPFK/one-piece
     // We want the segment immediately after "/series/"
@@ -145,16 +156,13 @@ async fn get_chapters(
             None => continue,
         };
 
-        // Find a span whose text matches "Chapter N"
+        // Find a span whose text ends with a number (e.g. "Chapter 1", "Act 42")
         let mut chapter_number: Option<f32> = None;
         for span in anchor.select(&span_selector) {
             let text: String = span.text().collect::<Vec<_>>().join("");
-            let trimmed = text.trim();
-            if let Some(rest) = trimmed.strip_prefix("Chapter ") {
-                if let Ok(n) = rest.trim().parse::<f32>() {
-                    chapter_number = Some(n);
-                    break;
-                }
+            if let Some(n) = parse_chapter_number(&text) {
+                chapter_number = Some(n);
+                break;
             }
         }
 
@@ -298,4 +306,37 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_chapter_number_standard_prefix() {
+        assert_eq!(parse_chapter_number("Chapter 1"), Some(1.0));
+        assert_eq!(parse_chapter_number("Chapter 42"), Some(42.0));
+        assert_eq!(parse_chapter_number("Chapter 1.5"), Some(1.5));
+    }
+
+    #[test]
+    fn parse_chapter_number_non_standard_prefix() {
+        assert_eq!(parse_chapter_number("Act 1"), Some(1.0));
+        assert_eq!(parse_chapter_number("Episode 12"), Some(12.0));
+        assert_eq!(parse_chapter_number("Part 3.5"), Some(3.5));
+    }
+
+    #[test]
+    fn parse_chapter_number_bare_number() {
+        assert_eq!(parse_chapter_number("7"), Some(7.0));
+        assert_eq!(parse_chapter_number("  100  "), Some(100.0));
+    }
+
+    #[test]
+    fn parse_chapter_number_no_number() {
+        assert_eq!(parse_chapter_number("Chapter"), None);
+        assert_eq!(parse_chapter_number(""), None);
+        assert_eq!(parse_chapter_number("   "), None);
+        assert_eq!(parse_chapter_number("Act One"), None);
+    }
 }
