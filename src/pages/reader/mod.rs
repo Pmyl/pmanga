@@ -453,7 +453,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     // otherwise constrain width and cause aspect-ratio stretching.
                     {
                         let img_style = format!(
-                            "height: 100vh; width: auto; max-width: none; position: absolute; \
+                            "height: 100dvh; width: auto; max-width: none; position: absolute; \
                              right: 0; transform: translateX({}px); user-select: none; display: block;",
                             current_pan_x
                         );
