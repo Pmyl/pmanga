@@ -151,11 +151,19 @@ pub fn ShelfPage() -> Element {
                 // Total pages across all chapters for this manga.
                 let total_pages: u32 = chapters.iter().map(|c| c.page_count).sum();
 
-                // Pages read: sum of progress.page across all chapters of this manga.
+                // Pages read: sum of (progress.page + 1) clamped to page_count across all
+                // chapters of this manga.  p.page is a 0-based index, so +1 converts it to
+                // a read-page count.  Clamping prevents an oversized saved value from
+                // inflating the total beyond 100 %.
                 let pages_read: u32 = all_progress
                     .iter()
-                    .filter(|p| p.manga_id == manga.id)
-                    .map(|p| p.page as u32)
+                    .filter_map(|p| {
+                        if p.manga_id != manga.id {
+                            return None;
+                        }
+                        let chapter = chapters.iter().find(|c| c.id == p.chapter_id)?;
+                        Some((p.page as u32 + 1).min(chapter.page_count))
+                    })
                     .sum();
 
                 let progress_value = if total_pages > 0 {

@@ -14,7 +14,7 @@ use crate::{
         db::Db,
         models::{
             ChapterId, ChapterMeta, ChapterSource, LibraryEntry, MangaId, MangaMeta, MangaSource,
-            build_library_entries,
+            ReadingProgress, build_library_entries,
         },
     },
 };
@@ -213,8 +213,13 @@ pub fn LibraryPage(manga_id: String) -> Element {
 
                 let pages_read: u32 = all_progress
                     .iter()
-                    .filter(|p| chapter_list.iter().any(|c| c.id == p.chapter_id))
-                    .map(|p| p.page as u32)
+                    .filter_map(|p| {
+                        let chapter = chapter_list.iter().find(|c| c.id == p.chapter_id)?;
+                        // p.page is 0-based index; +1 converts to a read-page count.
+                        // Clamped to page_count so a stale/oversized saved value never
+                        // inflates the total beyond 100 %.
+                        Some((p.page as u32 + 1).min(chapter.page_count))
+                    })
                     .sum();
 
                 let progress_value = if total_pages > 0 {
@@ -824,6 +829,14 @@ pub fn LibraryPage(manga_id: String) -> Element {
                             let resume_page = item.resume_page;
                             let mid_click = manga_id_for_nav.clone();
                             let nav2 = navigator();
+
+                            // Collect the chapters for this entry so the mark-read
+                            // handler can save progress for each one.
+                            let mark_read_chapters: Vec<ChapterMeta> = match &item.entry {
+                                LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                                LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
+                            };
+
                             rsx! {
                                 LibraryEntryCard {
                                     key: "{idx}",
@@ -852,6 +865,31 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                     },
                                     on_delete: move |_| {
                                         *pending_delete.write() = Some(idx);
+                                    },
+                                    on_mark_read: move |_| {
+                                        let Some(db) = db_signal.read().clone() else { return };
+                                        let chapters = mark_read_chapters.clone();
+                                        spawn(async move {
+                                            for chapter in &chapters {
+                                                if chapter.page_count == 0 {
+                                                    continue;
+                                                }
+                                                let progress = ReadingProgress {
+                                                    manga_id: chapter.manga_id.clone(),
+                                                    chapter_id: chapter.id.clone(),
+                                                    // Save the last valid page index so the
+                                                    // display shows 100 % and resume lands on
+                                                    // the final page.
+                                                    page: (chapter.page_count - 1) as usize,
+                                                };
+                                                if let Err(e) = db.save_progress(&progress).await {
+                                                    web_sys::console::error_1(
+                                                        &format!("mark_read save_progress error: {e}").into(),
+                                                    );
+                                                }
+                                            }
+                                            *refresh_counter.write() += 1;
+                                        });
                                     },
                                 }
                             }
