@@ -44,6 +44,8 @@ fn Settings() -> Element {
 pub fn App() -> Element {
     rsx! {
         document::Link { rel: "icon", href: asset!("/assets/favicon-512x512.png") }
+        document::Link { rel: "apple-touch-icon", href: asset!("/assets/favicon-180x180.png") }
+        document::Meta { name: "apple-mobile-web-app-capable", content: "yes" }
 
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
         document::Stylesheet { href: asset!("/assets/main.css") }
