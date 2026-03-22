@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::storage::progress::{clear_last_opened, load_proxy_url};
+use crate::storage::progress::{clear_last_opened, load_last_opened, load_proxy_url};
 use dioxus::prelude::*;
 use js_sys::Promise;
 use wasm_bindgen_futures::JsFuture;
@@ -101,6 +101,12 @@ pub fn LibraryPage(manga_id: String) -> Element {
     // Which entry is pending deletion (index into display_data).
     let mut pending_delete: Signal<Option<usize>> = use_signal(|| None);
 
+    // Multi-select state.
+    let mut select_mode: Signal<bool> = use_signal(|| false);
+    let mut selected_indices: Signal<std::collections::HashSet<usize>> =
+        use_signal(std::collections::HashSet::new);
+    let mut pending_bulk_delete: Signal<bool> = use_signal(|| false);
+
     // Open DB and load the manga meta on mount (or when manga_id changes).
     let manga_id_for_db = manga_id.clone();
     use_effect(move || {
@@ -108,7 +114,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
         spawn(async move {
             match Db::open().await {
                 Ok(db) => {
-                    let db = Rc::new(db);
+                    let db: Rc<Db> = Rc::new(db);
                     match db.load_all_mangas().await {
                         Ok(mangas) => {
                             let found = mangas.into_iter().find(|m| m.id.0 == mid);
@@ -277,6 +283,18 @@ pub fn LibraryPage(manga_id: String) -> Element {
                         &format!("delete_pages_for_chapter error: {e}").into(),
                     );
                 }
+                if let Err(e) = db.delete_progress_for_chapter(cid).await {
+                    web_sys::console::error_1(
+                        &format!("delete_progress_for_chapter error: {e}").into(),
+                    );
+                }
+            }
+
+            // Clear last_opened if it points to a deleted chapter.
+            if let Some(last) = load_last_opened() {
+                if chapter_ids.iter().any(|cid| cid.0 == last.chapter_id) {
+                    clear_last_opened();
+                }
             }
 
             // Check if any chapters remain; if none, delete the manga entirely.
@@ -289,6 +307,87 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     // try to reopen a page from a manga that no longer exists.
                     clear_last_opened();
                     // Navigate back to shelf since the manga is gone.
+                    navigator().push(Route::Shelf {});
+                    return;
+                }
+                Err(e) => {
+                    web_sys::console::error_1(
+                        &format!("load_chapters_for_manga error: {e}").into(),
+                    );
+                }
+                _ => {}
+            }
+
+            *refresh_counter.write() += 1;
+        });
+    };
+
+    // -----------------------------------------------------------------------
+    // Bulk delete handler
+    // -----------------------------------------------------------------------
+    let manga_id_for_bulk_delete = manga_id.clone();
+    let on_confirm_bulk_delete = move |_| {
+        pending_bulk_delete.set(false);
+        let indices: Vec<usize> = selected_indices.read().iter().cloned().collect();
+        selected_indices.write().clear();
+        select_mode.set(false);
+
+        let Some(db) = db_signal.read().clone() else {
+            return;
+        };
+        let mid = manga_id_for_bulk_delete.clone();
+
+        let entries_to_delete: Vec<_> = indices
+            .iter()
+            .filter_map(|&idx| display_data.read().get(idx).map(|d| d.entry.clone()))
+            .collect();
+
+        spawn(async move {
+            for entry in &entries_to_delete {
+                let chapter_ids: Vec<ChapterId> = match entry {
+                    LibraryEntry::Tankobon { chapters, .. } => {
+                        chapters.iter().map(|c| c.id.clone()).collect()
+                    }
+                    LibraryEntry::LoneChapter(ch) => vec![ch.id.clone()],
+                };
+                for cid in &chapter_ids {
+                    if let Err(e) = db.delete_chapter(cid).await {
+                        web_sys::console::error_1(&format!("delete_chapter error: {e}").into());
+                    }
+                    if let Err(e) = db.delete_pages_for_chapter(cid).await {
+                        web_sys::console::error_1(
+                            &format!("delete_pages_for_chapter error: {e}").into(),
+                        );
+                    }
+                    if let Err(e) = db.delete_progress_for_chapter(cid).await {
+                        web_sys::console::error_1(
+                            &format!("delete_progress_for_chapter error: {e}").into(),
+                        );
+                    }
+                }
+            }
+
+            let all_deleted_chapter_ids: Vec<String> = entries_to_delete
+                .iter()
+                .flat_map(|e| match e {
+                    LibraryEntry::Tankobon { chapters, .. } => {
+                        chapters.iter().map(|c| c.id.0.clone()).collect::<Vec<_>>()
+                    }
+                    LibraryEntry::LoneChapter(ch) => vec![ch.id.0.clone()],
+                })
+                .collect();
+            if let Some(last) = load_last_opened() {
+                if all_deleted_chapter_ids.contains(&last.chapter_id) {
+                    clear_last_opened();
+                }
+            }
+
+            match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
+                Ok(remaining) if remaining.is_empty() => {
+                    if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
+                        web_sys::console::error_1(&format!("delete_manga error: {e}").into());
+                    }
+                    clear_last_opened();
                     navigator().push(Route::Shelf {});
                     return;
                 }
@@ -320,6 +419,29 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     "← Back"
                 }
                 h1 { class: "text-base font-semibold flex-1 truncate", "Library" }
+
+                // Select mode toggle
+                button {
+                    class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
+                    onclick: move |_| {
+                        if *select_mode.read() {
+                            select_mode.set(false);
+                            selected_indices.write().clear();
+                        } else {
+                            select_mode.set(true);
+                        }
+                    },
+                    if *select_mode.read() { "Cancel" } else { "Select" }
+                }
+
+                // Delete selected button (shown when items are selected)
+                if *select_mode.read() && !selected_indices.read().is_empty() {
+                    button {
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#8b1a1a] text-[#f0f0f0] font-semibold active:bg-[#a82020]",
+                        onclick: move |_| { pending_bulk_delete.set(true); },
+                        "Delete ({selected_indices.read().len()})"
+                    }
+                }
 
                 // Show Sync for WeebCentral manga, Import for local manga.
                 if matches!(
@@ -666,12 +788,23 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                     progress_value: item.progress_value,
                                     pages_read: item.pages_read,
                                     total_pages: item.total_pages,
+                                    in_select_mode: *select_mode.read(),
+                                    is_selected: selected_indices.read().contains(&idx),
                                     on_click: move |_| {
-                                        nav2.push(Route::Reader {
-                                            manga_id: mid_click.clone(),
-                                            chapter_id: first_chapter_id.clone(),
-                                            page: resume_page,
-                                        });
+                                        if *select_mode.read() {
+                                            let mut sel = selected_indices.write();
+                                            if sel.contains(&idx) {
+                                                sel.remove(&idx);
+                                            } else {
+                                                sel.insert(idx);
+                                            }
+                                        } else {
+                                            nav2.push(Route::Reader {
+                                                manga_id: mid_click.clone(),
+                                                chapter_id: first_chapter_id.clone(),
+                                                page: resume_page,
+                                            });
+                                        }
                                     },
                                     on_delete: move |_| {
                                         *pending_delete.write() = Some(idx);
@@ -692,6 +825,19 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     on_cancel: move |_| {
                         *pending_delete.write() = None;
                     },
+                }
+            }
+
+            // Bulk-delete confirmation dialog
+            if *pending_bulk_delete.read() {
+                ConfirmDialog {
+                    message: format!(
+                        "Delete {} selected entr{}? All pages will be removed and cannot be recovered.",
+                        selected_indices.read().len(),
+                        if selected_indices.read().len() == 1 { "y" } else { "ies" }
+                    ),
+                    on_confirm: on_confirm_bulk_delete,
+                    on_cancel: move |_| { pending_bulk_delete.set(false); },
                 }
             }
 

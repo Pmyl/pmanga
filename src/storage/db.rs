@@ -494,4 +494,13 @@ impl Db {
         let val = await_request(request_to_future(&req)).await?;
         array_to_vec(val)
     }
+
+    /// Delete the reading progress record for a single chapter.
+    pub async fn delete_progress_for_chapter(&self, chapter_id: &ChapterId) -> Result<(), String> {
+        let store = self.rw_store(STORE_PROGRESS)?;
+        let key = JsValue::from_str(&chapter_id.0);
+        let req = store.delete(&key).map_err(|e| format!("{:?}", e))?;
+        await_request(request_to_future(&req)).await?;
+        Ok(())
+    }
 }

@@ -88,6 +88,10 @@ pub struct LibraryEntryCardProps {
     pub total_pages: u32,
     pub on_click: EventHandler<()>,
     pub on_delete: EventHandler<()>,
+    #[props(default = false)]
+    pub in_select_mode: bool,
+    #[props(default = false)]
+    pub is_selected: bool,
 }
 
 #[component]
@@ -117,16 +121,24 @@ pub fn LibraryEntryCard(props: LibraryEntryCardProps) -> Element {
                         "?"
                     }
                 }
+                if props.is_selected {
+                    div {
+                        class: "absolute inset-0 bg-[#4caf50]/30 flex items-center justify-center",
+                        span { class: "text-white text-3xl font-bold", "✓" }
+                    }
+                }
             }
 
             // Delete button — absolutely positioned over the cover
-            div {
-                class: "absolute top-1.5 right-1.5",
-                button {
-                    class: "border-0 cursor-pointer text-xs px-1.5 py-0.5 rounded bg-[#8b1a1a]/70 text-[#f0f0f0] active:bg-[#8b1a1a]",
-                    title: "Delete",
-                    onclick: move |_| props.on_delete.call(()),
-                    "🗑"
+            if !props.in_select_mode {
+                div {
+                    class: "absolute top-1.5 right-1.5",
+                    button {
+                        class: "border-0 cursor-pointer text-xs px-1.5 py-0.5 rounded bg-[#8b1a1a]/70 text-[#f0f0f0] active:bg-[#8b1a1a]",
+                        title: "Delete",
+                        onclick: move |_| props.on_delete.call(()),
+                        "🗑"
+                    }
                 }
             }
 

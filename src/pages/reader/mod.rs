@@ -2,7 +2,9 @@
 //! info overlay, gamepad support, and double-spread zoom.
 
 mod navigation;
+mod options_modal;
 mod overlay;
+mod reader_config;
 mod viewport;
 
 use std::cell::RefCell;
@@ -15,7 +17,7 @@ use wasm_bindgen::closure::Closure;
 use crate::{
     input::gamepad::use_gamepad,
     input::{Action, config::GamepadConfig},
-    pages::padding::{ChapterPadding, PaddingModal, load_chapter_padding},
+    pages::padding::{ChapterPadding, load_chapter_padding},
     routes::Route,
     storage::{
         db::Db,
@@ -24,7 +26,9 @@ use crate::{
 };
 
 use navigation::go_to_page;
+use options_modal::ReaderOptionsModal;
 use overlay::ReaderOverlay;
+use reader_config::ReaderConfig;
 use viewport::{
     blob_to_object_url, is_portrait, pan_step, rendered_width_when_height_fitted, viewport_width,
 };
@@ -66,7 +70,8 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // Per-chapter padding / crop.
     let mut padding_signal: Signal<ChapterPadding> =
         use_signal(|| load_chapter_padding(&chapter_id));
-    let mut padding_modal_open = use_signal(|| false);
+    let mut settings_modal_open = use_signal(|| false);
+    let reader_config_signal: Signal<ReaderConfig> = use_signal(|| ReaderConfig::load());
 
     // Sync padding when the chapter changes.
     {
@@ -508,15 +513,16 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             div {
                 class: "reader-tap-zones",
 
-                // Left third → previous page; in zoom, pan right (back toward right edge for RTL).
+                // Left third → prev page in LTR, next page in RTL/manga style; in zoom, pan right.
                 div {
                     class: "tap-zone tap-zone-left",
                     onclick: move |_| {
                         if spread_zoomed() {
                             tap_pan_left();
                         } else {
+                            let delta: isize = if reader_config_signal().rtl_taps { 1 } else { -1 };
                             go_to_page(
-                                page as isize - 1,
+                                page as isize + delta,
                                 &manga_id_prev,
                                 &chapter_id_prev,
                                 chapter_pages,
@@ -540,15 +546,16 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     onclick: move |_| overlay_visible.set(!overlay_visible()),
                 }
 
-                // Right third → next page; in zoom, pan left (advance toward left side for RTL).
+                // Right third → next page in LTR, prev page in RTL/manga style; in zoom, pan left.
                 div {
                     class: "tap-zone tap-zone-right",
                     onclick: move |_| {
                         if spread_zoomed() {
                             tap_pan_right();
                         } else {
+                            let delta: isize = if reader_config_signal().rtl_taps { -1 } else { 1 };
                             go_to_page(
-                                page as isize + 1,
+                                page as isize + delta,
                                 &manga_id_next,
                                 &chapter_id_next,
                                 chapter_pages,
@@ -569,16 +576,17 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     chapter_meta: chapter_meta.clone(),
                     page,
                     on_close: move |_| overlay_visible.set(false),
-                    on_open_padding: move |_| padding_modal_open.set(true),
+                    on_open_settings: move |_| settings_modal_open.set(true),
                 }
             }
 
             // ---- Padding adjustment modal ----
-            if padding_modal_open() {
-                PaddingModal {
+            if settings_modal_open() {
+                ReaderOptionsModal {
                     chapter_id: chapter_id.clone(),
                     padding: padding_signal,
-                    on_close: move |_| padding_modal_open.set(false),
+                    reader_config: reader_config_signal,
+                    on_close: move |_| settings_modal_open.set(false),
                 }
             }
         }
