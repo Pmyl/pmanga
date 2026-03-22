@@ -4,13 +4,19 @@ use super::models::LastOpened;
 use serde_json;
 use web_sys;
 
+use std::cell::Cell;
+
 const LAST_OPENED_KEY: &str = "pmanga_last_opened";
 const PROXY_URL_KEY: &str = "pmanga_proxy_url";
 
-/// sessionStorage key used to ensure the startup redirect to the last-read
-/// page fires only once per browser session (on fresh app open), not every
-/// time the user navigates back to the shelf.
-const STARTUP_REDIRECT_DONE_KEY: &str = "pmanga_startup_redirect_done";
+// In-memory flag: set to `true` the first time the startup redirect fires.
+// Using `thread_local!` instead of sessionStorage means it can never fail
+// silently (no storage API, no iOS quirks) and resets automatically when the
+// WASM module is reloaded (i.e. on a real page reload), which is exactly the
+// desired "once per browser session" semantics.
+thread_local! {
+    static STARTUP_REDIRECT_DONE: Cell<bool> = const { Cell::new(false) };
+}
 
 pub fn save_last_opened(pos: &LastOpened) {
     let Some(window) = web_sys::window() else {
@@ -34,24 +40,12 @@ pub fn load_last_opened() -> Option<LastOpened> {
 /// Returns `true` if the one-time startup redirect has already been
 /// performed in this browser session.
 pub fn is_startup_redirect_done() -> bool {
-    let Some(window) = web_sys::window() else {
-        return true; // Fail-safe: don't redirect if we can't check.
-    };
-    let Ok(Some(storage)) = window.session_storage() else {
-        return true;
-    };
-    matches!(storage.get_item(STARTUP_REDIRECT_DONE_KEY), Ok(Some(_)))
+    STARTUP_REDIRECT_DONE.with(|v| v.get())
 }
 
-/// Marks the startup redirect as done for this browser session.
+/// Marks the startup redirect as done for this session.
 pub fn mark_startup_redirect_done() {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Ok(Some(storage)) = window.session_storage() else {
-        return;
-    };
-    let _ = storage.set_item(STARTUP_REDIRECT_DONE_KEY, "1");
+    STARTUP_REDIRECT_DONE.with(|v| v.set(true));
 }
 
 pub fn save_proxy_url(url: &str) {

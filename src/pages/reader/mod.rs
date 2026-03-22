@@ -7,7 +7,7 @@ mod overlay;
 mod reader_config;
 mod viewport;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
@@ -39,6 +39,16 @@ use viewport::{
 
 #[component]
 pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element {
+    // ----- Alive guard -----
+    // Cloned into the progress-sync resource. use_drop sets it to false when
+    // the component unmounts, preventing any ghost async task from calling
+    // navigator().replace() after the Reader has been removed from the tree.
+    let component_alive = Rc::new(Cell::new(true));
+    {
+        let alive_for_drop = component_alive.clone();
+        use_drop(move || alive_for_drop.set(false));
+    }
+
     // ----- Signals -----
     let mut overlay_visible = use_signal(|| false);
 
@@ -283,12 +293,14 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         let db_signal = db_signal;
         let manga_id_for_progress = manga_id.clone();
 
+        let alive = component_alive.clone();
         use_resource(move || {
             // Reading chapter_id_signal() here makes the resource re-run every
             // time the chapter changes.
             let current_chapter_id = chapter_id_signal();
             let db = db_signal.read().clone();
             let manga_id_for_progress = manga_id_for_progress.clone();
+            let alive = alive.clone();
             async move {
                 let Some(db) = db else { return };
                 // Snapshot the page non-reactively so we don't re-run on every
@@ -299,7 +311,11 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     .load_progress(&ChapterId(current_chapter_id.clone()))
                     .await
                 {
-                    if saved.page != current_page {
+                    // Guard: if the Reader has already unmounted (e.g. the user
+                    // navigated away while the DB was still opening), do not
+                    // call replace() — that would stomp on whatever page the
+                    // user is currently on.
+                    if alive.get() && saved.page != current_page {
                         navigator().replace(Route::Reader {
                             manga_id: manga_id_for_progress,
                             chapter_id: current_chapter_id,

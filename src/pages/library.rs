@@ -650,6 +650,50 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                                 })
                                                 .collect();
 
+                                            // Re-check tankobon_number for existing chapters
+                                            // that fall within the requested sync range.
+                                            // This keeps volume assignments up to date when
+                                            // the CSV is updated, without re-fetching pages.
+                                            let chapters_to_retankobon: Vec<ChapterMeta> = existing
+                                                .iter()
+                                                .filter(|c| {
+                                                    if let Some(f) = from_ch {
+                                                        if c.chapter_number < f { return false; }
+                                                    }
+                                                    if let Some(t) = to_ch {
+                                                        if c.chapter_number > t { return false; }
+                                                    }
+                                                    true
+                                                })
+                                                .filter_map(|c| {
+                                                    let new_tankobon = lookup_tankobon(
+                                                        &manga_title,
+                                                        c.chapter_number,
+                                                        &csv_rows_snapshot,
+                                                    );
+                                                    if new_tankobon != c.tankobon_number {
+                                                        Some(ChapterMeta {
+                                                            tankobon_number: new_tankobon,
+                                                            ..c.clone()
+                                                        })
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .collect();
+
+                                            for updated in &chapters_to_retankobon {
+                                                if let Err(e) = db.save_chapter(updated).await {
+                                                    web_sys::console::error_1(
+                                                        &format!(
+                                                            "Failed to update tankobon for chapter {}: {e}",
+                                                            updated.chapter_number
+                                                        )
+                                                        .into(),
+                                                    );
+                                                }
+                                            }
+
                                             let total_new = new_chapters.len();
                                             let mut saved = 0usize;
 
