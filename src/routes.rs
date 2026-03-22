@@ -43,6 +43,8 @@ fn Settings() -> Element {
 #[component]
 pub fn App() -> Element {
     rsx! {
+        document::Link { rel: "icon", href: asset!("/assets/favicon-512x512.png") }
+
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
         document::Stylesheet { href: asset!("/assets/main.css") }
         // JSZip must be loaded before the bridge runs.
