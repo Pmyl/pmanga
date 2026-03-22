@@ -475,7 +475,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         if p.is_zero() {
                             rsx! {
                                 img {
-                                    class: "max-w-full max-h-screen object-contain block select-none",
+                                    class: "max-w-full max-h-dvh object-contain block select-none",
                                     src: current_blob_url.clone().unwrap_or_default(),
                                     alt: "Manga page {page}",
                                 }
@@ -483,7 +483,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         } else {
                             let img_style = format!(
                                 "max-width: calc(100% + {}px + {}px); \
-                                 max-height: calc(100vh + {}px + {}px); \
+                                 max-height: calc(100dvh + {}px + {}px); \
                                  margin: -{}px -{}px -{}px -{}px; \
                                  object-fit: contain; display: block; user-select: none;",
                                 p.left, p.right, p.up, p.down,
