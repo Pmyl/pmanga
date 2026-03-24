@@ -58,7 +58,7 @@ pub fn ReaderOptionsModal(
                     label {
                         class: "text-sm text-[#ccc] flex-1 cursor-pointer",
                         r#for: "rtl-taps-toggle",
-                        "Left tap = Next Page (manga style)"
+                        "Left tap = Next Page / Zoom move right (manga style)"
                     }
                     input {
                         id: "rtl-taps-toggle",

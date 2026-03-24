@@ -534,7 +534,11 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     class: "tap-zone tap-zone-left",
                     onclick: move |_| {
                         if spread_zoomed() {
-                            tap_pan_left();
+                            if reader_config_signal().rtl_taps {
+                                tap_pan_left();
+                            } else {
+                                tap_pan_right();
+                            };
                         } else {
                             let delta: isize = if reader_config_signal().rtl_taps { 1 } else { -1 };
                             go_to_page(
@@ -567,7 +571,11 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     class: "tap-zone tap-zone-right",
                     onclick: move |_| {
                         if spread_zoomed() {
-                            tap_pan_right();
+                            if reader_config_signal().rtl_taps {
+                                tap_pan_right();
+                            } else {
+                                tap_pan_left();
+                            };
                         } else {
                             let delta: isize = if reader_config_signal().rtl_taps { -1 } else { 1 };
                             go_to_page(
