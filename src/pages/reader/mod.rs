@@ -195,21 +195,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         }
     };
 
-    // ----- Gamepad -----
-    let gamepad_config = use_signal(|| GamepadConfig::load());
-    let gp_manga_id = manga_id.clone();
-
-    use_gamepad(gamepad_config, {
-        let mut overlay_visible = overlay_visible;
-        let db_signal = db_signal;
-        let chapters_signal = chapters_signal;
-        let chapter_meta_signal = chapter_meta_signal;
-        let spread_zoomed = spread_zoomed;
-        let mut try_toggle_spread_zoom = try_toggle_spread_zoom.clone();
+    // ----- Navigate left / right (shared by tap zones and gamepad) -----
+    let handle_navigate_left = {
         let mut handle_pan_left = handle_pan_left.clone();
         let mut handle_pan_right = handle_pan_right.clone();
-
-        move |action| {
+        let manga_id = manga_id.clone();
+        move || {
             let current_page = page_signal();
             let current_chapter_id = chapter_id_signal();
             let chapter_pages = chapter_meta_signal
@@ -224,50 +215,100 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 .unwrap_or(0);
             let db = db_signal.read().clone();
 
-            match action {
-                Action::NextPage => {
-                    if spread_zoomed() {
-                        handle_pan_right();
-                    } else {
-                        go_to_page(
-                            current_page as isize + 1,
-                            &gp_manga_id,
-                            &current_chapter_id,
-                            chapter_pages,
-                            &all_chapters,
-                            current_idx,
-                            db,
-                        );
-                    }
+            if spread_zoomed() {
+                if reader_config_signal().rtl_taps {
+                    handle_pan_left();
+                } else {
+                    handle_pan_right();
                 }
-                Action::PreviousPage => {
-                    if spread_zoomed() {
-                        handle_pan_left();
-                    } else {
-                        go_to_page(
-                            current_page as isize - 1,
-                            &gp_manga_id,
-                            &current_chapter_id,
-                            chapter_pages,
-                            &all_chapters,
-                            current_idx,
-                            db,
-                        );
-                    }
-                }
-                Action::ToggleOverlay => {
-                    overlay_visible.set(!overlay_visible());
-                }
-                Action::ToggleSpreadZoom => {
-                    try_toggle_spread_zoom();
-                }
-                Action::GoBack => {
-                    navigator().push(Route::Library {
-                        manga_id: gp_manga_id.clone(),
-                    });
-                }
-                Action::Confirm => {}
+            } else {
+                let delta: isize = if reader_config_signal().rtl_taps {
+                    1
+                } else {
+                    -1
+                };
+                go_to_page(
+                    current_page as isize + delta,
+                    &manga_id,
+                    &current_chapter_id,
+                    chapter_pages,
+                    &all_chapters,
+                    current_idx,
+                    db,
+                );
             }
+        }
+    };
+
+    let handle_navigate_right = {
+        let mut handle_pan_left = handle_pan_left.clone();
+        let mut handle_pan_right = handle_pan_right.clone();
+        let manga_id = manga_id.clone();
+        move || {
+            let current_page = page_signal();
+            let current_chapter_id = chapter_id_signal();
+            let chapter_pages = chapter_meta_signal
+                .read()
+                .as_ref()
+                .map(|c| c.page_count)
+                .unwrap_or(1);
+            let all_chapters = chapters_signal.read().clone();
+            let current_idx = all_chapters
+                .iter()
+                .position(|c| c.id.0 == current_chapter_id)
+                .unwrap_or(0);
+            let db = db_signal.read().clone();
+
+            if spread_zoomed() {
+                if reader_config_signal().rtl_taps {
+                    handle_pan_right();
+                } else {
+                    handle_pan_left();
+                }
+            } else {
+                let delta: isize = if reader_config_signal().rtl_taps {
+                    -1
+                } else {
+                    1
+                };
+                go_to_page(
+                    current_page as isize + delta,
+                    &manga_id,
+                    &current_chapter_id,
+                    chapter_pages,
+                    &all_chapters,
+                    current_idx,
+                    db,
+                );
+            }
+        }
+    };
+
+    // ----- Gamepad -----
+    let gamepad_config = use_signal(|| GamepadConfig::load());
+    let gp_manga_id = manga_id.clone();
+
+    use_gamepad(gamepad_config, {
+        let mut overlay_visible = overlay_visible;
+        let mut try_toggle_spread_zoom = try_toggle_spread_zoom.clone();
+        let mut gp_navigate_left = handle_navigate_left.clone();
+        let mut gp_navigate_right = handle_navigate_right.clone();
+
+        move |action| match action {
+            Action::NextPage => gp_navigate_right(),
+            Action::PreviousPage => gp_navigate_left(),
+            Action::ToggleOverlay => {
+                overlay_visible.set(!overlay_visible());
+            }
+            Action::ToggleSpreadZoom => {
+                try_toggle_spread_zoom();
+            }
+            Action::GoBack => {
+                navigator().push(Route::Library {
+                    manga_id: gp_manga_id.clone(),
+                });
+            }
+            Action::Confirm => {}
         }
     });
 
@@ -421,33 +462,16 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     // ----- Derived data for render -----
     let db_ready = db_signal.read().is_some();
     let current_blob_url = blob_url.read().clone();
-    let all_chapters = chapters_signal.read().clone();
     let chapter_meta = chapter_meta_signal.read().clone();
     let manga_title = manga_title_signal.read().clone();
-
-    let chapter_pages = chapter_meta.as_ref().map(|c| c.page_count).unwrap_or(1);
-    let current_chapter_idx = all_chapters
-        .iter()
-        .position(|c| c.id.0 == chapter_id)
-        .unwrap_or(0);
 
     let is_zoomed = spread_zoomed();
     let current_pan_x = pan_x();
 
-    // Clone handlers and data for tap zones (closures must own their data).
-    let manga_id_prev = manga_id.clone();
-    let chapter_id_prev = chapter_id.clone();
-    let all_chapters_prev = all_chapters.clone();
-    let db_prev = db_signal.read().clone();
-
-    let manga_id_next = manga_id.clone();
-    let chapter_id_next = chapter_id.clone();
-    let all_chapters_next = all_chapters.clone();
-    let db_next = db_signal.read().clone();
-
+    // Clone handlers for tap zones (closures must own their data).
     let mut tap_toggle_zoom = try_toggle_spread_zoom.clone();
-    let mut tap_pan_left = handle_pan_left.clone();
-    let mut tap_pan_right = handle_pan_right.clone();
+    let mut tap_navigate_left = handle_navigate_left;
+    let mut tap_navigate_right = handle_navigate_right;
 
     // ----- Render -----
     rsx! {
@@ -529,29 +553,10 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             div {
                 class: "reader-tap-zones",
 
-                // Left third → prev page in LTR, next page in RTL/manga style; in zoom, pan right.
+                // Left third → prev page in LTR, next page in RTL/manga style.
                 div {
                     class: "tap-zone tap-zone-left",
-                    onclick: move |_| {
-                        if spread_zoomed() {
-                            if reader_config_signal().rtl_taps {
-                                tap_pan_left();
-                            } else {
-                                tap_pan_right();
-                            };
-                        } else {
-                            let delta: isize = if reader_config_signal().rtl_taps { 1 } else { -1 };
-                            go_to_page(
-                                page as isize + delta,
-                                &manga_id_prev,
-                                &chapter_id_prev,
-                                chapter_pages,
-                                &all_chapters_prev,
-                                current_chapter_idx,
-                                db_prev.clone(),
-                            );
-                        }
-                    }
+                    onclick: move |_| tap_navigate_left(),
                 }
 
                 // Middle third → toggle spread zoom.
@@ -566,29 +571,10 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                     onclick: move |_| overlay_visible.set(!overlay_visible()),
                 }
 
-                // Right third → next page in LTR, prev page in RTL/manga style; in zoom, pan left.
+                // Right third → next page in LTR, prev page in RTL/manga style.
                 div {
                     class: "tap-zone tap-zone-right",
-                    onclick: move |_| {
-                        if spread_zoomed() {
-                            if reader_config_signal().rtl_taps {
-                                tap_pan_right();
-                            } else {
-                                tap_pan_left();
-                            };
-                        } else {
-                            let delta: isize = if reader_config_signal().rtl_taps { -1 } else { 1 };
-                            go_to_page(
-                                page as isize + delta,
-                                &manga_id_next,
-                                &chapter_id_next,
-                                chapter_pages,
-                                &all_chapters_next,
-                                current_chapter_idx,
-                                db_next.clone(),
-                            );
-                        }
-                    }
+                    onclick: move |_| tap_navigate_right(),
                 }
             }
 
