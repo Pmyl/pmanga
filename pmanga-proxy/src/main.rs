@@ -186,6 +186,10 @@ async fn get_chapters(
     Ok(Json(chapters))
 }
 
+async fn get_health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
 async fn get_pages(
     Path(chapter_id): Path<String>,
 ) -> Result<Json<Vec<PageItem>>, (StatusCode, String)> {
@@ -256,6 +260,7 @@ async fn main() {
         .allow_headers(Any);
 
     let app = Router::new()
+        .route("/api/health", get(get_health))
         .route("/api/series", get(get_series))
         .route("/api/chapters/:series_id", get(get_chapters))
         .route("/api/pages/:chapter_id", get(get_pages))

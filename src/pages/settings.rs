@@ -5,6 +5,7 @@ use js_sys::Promise;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::{
+    bridge::weebcentral::test_proxy_connection,
     input::{Action, config::GamepadConfig},
     routes::Route,
     storage::progress::{load_proxy_url, save_proxy_url},
@@ -108,6 +109,17 @@ pub fn SettingsPage() -> Element {
     // WeebCentral proxy URL (persisted in localStorage).
     let mut proxy_url_input: Signal<String> = use_signal(|| load_proxy_url().unwrap_or_default());
     let mut proxy_saved: Signal<bool> = use_signal(|| false);
+
+    /// Connection test state for the "Test Connection" button.
+    #[derive(Clone, PartialEq)]
+    enum TestState {
+        Idle,
+        Testing,
+        Ok,
+        Failed(String),
+    }
+
+    let mut test_state: Signal<TestState> = use_signal(|| TestState::Idle);
 
     // Build the display rows from the current config snapshot.
     let rows = config.read().display_rows();
@@ -250,6 +262,7 @@ pub fn SettingsPage() -> Element {
                             oninput: move |e| {
                                 *proxy_url_input.write() = e.value();
                                 proxy_saved.set(false);
+                                test_state.set(TestState::Idle);
                             },
                         }
                         button {
@@ -259,6 +272,46 @@ pub fn SettingsPage() -> Element {
                                 proxy_saved.set(true);
                             },
                             "Save"
+                        }
+                    }
+                    // ── Test Connection ───────────────────────────────────
+                    div { class: "flex items-center gap-2",
+                        button {
+                            class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333] shrink-0",
+                            disabled: matches!(*test_state.read(), TestState::Testing),
+                            onclick: move |_| {
+                                let url = proxy_url_input.read().trim().to_string();
+                                if url.is_empty() {
+                                    test_state.set(TestState::Failed(
+                                        "Enter the proxy URL first.".to_string(),
+                                    ));
+                                    return;
+                                }
+                                test_state.set(TestState::Testing);
+                                spawn(async move {
+                                    match test_proxy_connection(&url).await {
+                                        Ok(()) => test_state.set(TestState::Ok),
+                                        Err(e) => test_state.set(TestState::Failed(e)),
+                                    }
+                                });
+                            },
+                            if matches!(*test_state.read(), TestState::Testing) {
+                                "Testing…"
+                            } else {
+                                "Test Connection"
+                            }
+                        }
+                        match &*test_state.read() {
+                            TestState::Idle => rsx! {},
+                            TestState::Testing => rsx! {
+                                span { class: "text-xs text-[#888] italic", "Connecting…" }
+                            },
+                            TestState::Ok => rsx! {
+                                span { class: "text-xs text-[#4caf50]", "✓ Connected" }
+                            },
+                            TestState::Failed(msg) => rsx! {
+                                span { class: "text-xs text-[#cf6679]", "✗ {msg}" }
+                            },
                         }
                     }
                     if *proxy_saved.read() {

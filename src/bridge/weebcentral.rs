@@ -5,6 +5,7 @@
 //! the MangaDex helpers in `bridge/js.rs`.
 
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 
 // ---------------------------------------------------------------------------
 // Shared client
@@ -43,6 +44,9 @@ pub struct WcPage {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Maximum body length to include inline in HTTP error messages.
+const MAX_ERROR_BODY_LEN: usize = 300;
+
 /// Perform a GET request against the proxy and deserialize the JSON body.
 async fn proxy_get<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String> {
     let resp = proxy_client()
@@ -50,15 +54,52 @@ async fn proxy_get<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String>
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|e| format!("proxy request failed: {e}"))?;
+        .map_err(|e| {
+            if e.is_connect() {
+                format!(
+                    "Could not connect to the proxy. Make sure it is running and the URL is correct. ({})",
+                    e
+                )
+            } else if e.is_timeout() {
+                format!(
+                    "Connection to the proxy timed out. Make sure it is reachable on your network. ({})",
+                    e
+                )
+            } else {
+                format!(
+                    "Network error while contacting the proxy. Check the proxy URL in Settings. ({})",
+                    e
+                )
+            }
+        })?;
 
     if !resp.status().is_success() {
-        return Err(format!("proxy returned HTTP {}", resp.status()));
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let body_hint = if !body.trim().is_empty() && body.len() < MAX_ERROR_BODY_LEN {
+            format!(": {}", body.trim())
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "Proxy returned HTTP {}{} — check that the proxy URL is correct and the proxy is up to date.",
+            status, body_hint
+        ));
     }
 
     resp.json::<T>()
         .await
-        .map_err(|e| format!("proxy JSON deserialize failed: {e}"))
+        .map_err(|e| format!("Proxy returned unexpected data (not valid JSON). The proxy may be outdated or returning an error page. ({})", e))
+}
+
+/// Test that the proxy is reachable and responding correctly.
+///
+/// Returns `Ok(())` on success or an `Err(message)` on failure.
+pub async fn test_proxy_connection(proxy_url: &str) -> Result<(), String> {
+    let url = format!("{proxy_url}/api/health");
+    // We just call proxy_get with a generic JSON value so we can reuse all the
+    // error-enrichment logic defined there.
+    proxy_get::<JsonValue>(&url).await.map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
