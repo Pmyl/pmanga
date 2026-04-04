@@ -216,81 +216,29 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         }
     };
 
-    // Advance to the next portrait zoom quadrant; if already at the last one,
-    // exit zoom and navigate forward by one page.
+    // Advance to the next portrait zoom quadrant; stays at the last quadrant if
+    // already there (mirrors spread zoom which clamps pan position at the edge).
     let handle_portrait_advance = {
-        let mut portrait_zoomed = portrait_zoomed;
         let mut portrait_quadrant = portrait_quadrant;
-        let manga_id_adv = manga_id.clone();
         move || {
             let q = portrait_quadrant();
             if q + 1 < PORTRAIT_QUADRANT_COUNT {
                 portrait_quadrant.set(q + 1);
-            } else {
-                let current_page = page_signal();
-                let current_chapter_id = chapter_id_signal();
-                let chapter_pages = chapter_meta_signal
-                    .read()
-                    .as_ref()
-                    .map(|c| c.page_count)
-                    .unwrap_or(1);
-                let all_chapters = chapters_signal.read().clone();
-                let current_idx = all_chapters
-                    .iter()
-                    .position(|c| c.id.0 == current_chapter_id)
-                    .unwrap_or(0);
-                let db = db_signal.read().clone();
-                portrait_zoomed.set(false);
-                portrait_quadrant.set(0);
-                go_to_page(
-                    current_page as isize + 1,
-                    &manga_id_adv,
-                    &current_chapter_id,
-                    chapter_pages,
-                    &all_chapters,
-                    current_idx,
-                    db,
-                );
             }
+            // At the last quadrant: do nothing — the user must toggle zoom off.
         }
     };
 
-    // Retreat to the previous portrait zoom quadrant; if already at the first
-    // one, exit zoom and navigate backward by one page.
+    // Retreat to the previous portrait zoom quadrant; stays at the first
+    // quadrant if already there (same boundary convention as spread zoom).
     let handle_portrait_retreat = {
-        let mut portrait_zoomed = portrait_zoomed;
         let mut portrait_quadrant = portrait_quadrant;
-        let manga_id_ret = manga_id.clone();
         move || {
             let q = portrait_quadrant();
             if q > 0 {
                 portrait_quadrant.set(q - 1);
-            } else {
-                let current_page = page_signal();
-                let current_chapter_id = chapter_id_signal();
-                let chapter_pages = chapter_meta_signal
-                    .read()
-                    .as_ref()
-                    .map(|c| c.page_count)
-                    .unwrap_or(1);
-                let all_chapters = chapters_signal.read().clone();
-                let current_idx = all_chapters
-                    .iter()
-                    .position(|c| c.id.0 == current_chapter_id)
-                    .unwrap_or(0);
-                let db = db_signal.read().clone();
-                portrait_zoomed.set(false);
-                portrait_quadrant.set(0);
-                go_to_page(
-                    current_page as isize - 1,
-                    &manga_id_ret,
-                    &current_chapter_id,
-                    chapter_pages,
-                    &all_chapters,
-                    current_idx,
-                    db,
-                );
             }
+            // At the first quadrant: do nothing — the user must toggle zoom off.
         }
     };
 
