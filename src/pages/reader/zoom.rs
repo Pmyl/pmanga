@@ -5,7 +5,9 @@
 //! - **Spread zoom**: landscape (double-spread) pages are fitted to viewport
 //!   height so their full width overflows; the user pans left/right.
 //! - **Portrait zoom**: portrait (single-page) images on a portrait screen are
-//!   zoomed to 3× width and displayed one sextant at a time.  Reading order:
+//!   zoomed to 2× width and stepped through 6 sextant positions.  The middle
+//!   column shows the image at x = -vw/2, overlapping both the right and left
+//!   columns.  Reading order:
 //!   top-right → top-middle → top-left → bottom-right → bottom-middle → bottom-left.
 
 use super::viewport::{viewport_height, viewport_width};
@@ -47,17 +49,19 @@ pub const PORTRAIT_QUADRANT_COUNT: PortraitQuadrant = 6;
 
 /// Returns the CSS `style` attribute string for a portrait-zoom image.
 ///
-/// The image is displayed at 3× viewport width (one column per sextant column)
-/// and translated so that `sextant` fills the visible area.
+/// The image is displayed at 2× viewport width (same zoom as the original
+/// quadrant mode) and translated to one of six sextant positions.  The middle
+/// column position (`sextant % 3 == 1`) sits at x = -vw/2, intentionally
+/// overlapping both the right and left columns.
 pub fn portrait_zoom_image_style(
     quadrant: PortraitQuadrant,
     natural_w: u32,
     natural_h: u32,
 ) -> String {
     let (tx, ty) = portrait_quadrant_translate(quadrant, natural_w, natural_h);
-    let tripled_w = viewport_width() * 3.0;
+    let doubled_w = viewport_width() * 2.0;
     format!(
-        "width: {tripled_w}px; height: auto; max-width: none; max-height: none; \
+        "width: {doubled_w}px; height: auto; max-width: none; max-height: none; \
          position: absolute; left: 0; top: 0; \
          transform: translate({tx}px, {ty}px); \
          user-select: none; display: block;"
@@ -67,11 +71,11 @@ pub fn portrait_zoom_image_style(
 /// Computes the CSS `translate(x, y)` offset (in pixels) that brings `sextant`
 /// into the visible viewport.
 ///
-/// The image is assumed to be rendered at `width = 3 × viewport_width`.
-/// Column layout (left-to-right in the rendered image):
-///   sextant % 3 == 0 → right column  (x = -2×vw)
-///   sextant % 3 == 1 → middle column (x = -vw)
-///   sextant % 3 == 2 → left column   (x = 0)
+/// The image is rendered at `width = 2 × viewport_width`.
+/// Column positions (sextant % 3):
+///   0 (right)  → x = -vw      (right edge of image at viewport right)
+///   1 (middle) → x = -vw/2    (overlaps both right and left columns)
+///   2 (left)   → x = 0        (left edge of image at viewport left)
 fn portrait_quadrant_translate(
     quadrant: PortraitQuadrant,
     natural_w: u32,
@@ -79,7 +83,7 @@ fn portrait_quadrant_translate(
 ) -> (f64, f64) {
     let vw = viewport_width();
     let vh = viewport_height();
-    let rendered_width = vw * 3.0;
+    let rendered_width = vw * 2.0;
     // rendered_height is only computed when natural_w > 0, so no division by zero.
     let rendered_height = if natural_w > 0 {
         (natural_h as f64) * (rendered_width / natural_w as f64)
@@ -88,13 +92,13 @@ fn portrait_quadrant_translate(
     };
 
     // Horizontal: column = sextant % 3.
-    //   0 (right)  → x = -(rendered_width - vw) = -2×vw
-    //   1 (middle) → x = -vw
-    //   2 (left)   → x = 0
+    //   0 (right)  → x = -vw      (same as original right quadrant)
+    //   1 (middle) → x = -vw/2    (midpoint, shows overlap with both sides)
+    //   2 (left)   → x = 0        (same as original left quadrant)
     let x = match quadrant % 3 {
-        0 => -(rendered_width - vw), // -2×vw: right edge aligns with viewport right
-        1 => -vw,                    // middle column centred
-        _ => 0.0,                    // left edge aligns with viewport left
+        0 => -vw,       // right edge of 2×vw image aligns with viewport right
+        1 => -(vw / 2.0), // midpoint of 2×vw image centred in viewport
+        _ => 0.0,       // left edge of image aligns with viewport left
     };
 
     // Vertical: sextants 0–2 → top row; sextants 3–5 → bottom row.
