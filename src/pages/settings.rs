@@ -273,6 +273,32 @@ pub fn SettingsPage() -> Element {
                             },
                             "Save"
                         }
+                        button {
+                            class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333] shrink-0",
+                            title: "Open in browser",
+                            onclick: move |_| {
+                                let url = proxy_url_input.read().trim().to_string();
+                                if !url.is_empty() {
+                                    if let Some(window) = web_sys::window() {
+                                        let _ = window.open_with_url_and_target(&url, "_blank");
+                                    }
+                                }
+                            },
+                            "↗"
+                        }
+                        button {
+                            class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333] shrink-0",
+                            title: "Navigate to address",
+                            onclick: move |_| {
+                                let url = proxy_url_input.read().trim().to_string();
+                                if !url.is_empty() {
+                                    if let Some(window) = web_sys::window() {
+                                        let _ = window.open_with_url_and_target(&url, "_self");
+                                    }
+                                }
+                            },
+                            "→"
+                        }
                     }
                     // ── Test Connection ───────────────────────────────────
                     div { class: "flex items-center gap-2",
