@@ -6,6 +6,7 @@ mod options_modal;
 mod overlay;
 mod reader_config;
 mod viewport;
+mod zoom;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,6 +32,9 @@ use overlay::ReaderOverlay;
 use reader_config::ReaderConfig;
 use viewport::{
     blob_to_object_url, is_portrait, pan_step, rendered_width_when_height_fitted, viewport_width,
+};
+use zoom::{
+    PORTRAIT_QUADRANT_COUNT, portrait_zoom_image_style, spread_zoom_image_style,
 };
 
 // ---------------------------------------------------------------------------
@@ -95,10 +99,12 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         }
     }
 
-    // ----- Spread-zoom state -----
+    // ----- Zoom state -----
     let img_natural_size: Signal<Option<(u32, u32)>> = use_signal(|| None);
     let mut spread_zoomed: Signal<bool> = use_signal(|| false);
     let mut pan_x: Signal<f64> = use_signal(|| 0.0);
+    let mut portrait_zoomed: Signal<bool> = use_signal(|| false);
+    let mut portrait_quadrant: Signal<u8> = use_signal(|| 0);
 
     // Reset zoom when the page or chapter changes.
     {
@@ -108,6 +114,10 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
             if spread_zoomed() {
                 spread_zoomed.set(false);
                 pan_x.set(0.0);
+            }
+            if portrait_zoomed() {
+                portrait_zoomed.set(false);
+                portrait_quadrant.set(0);
             }
             prev_page.set(page);
             prev_chapter.set(chapter_id.clone());
@@ -149,26 +159,37 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         });
     }
 
-    // ----- Spread-zoom / pan action handlers -----
-    let try_toggle_spread_zoom = {
+    // ----- Zoom / pan action handlers -----
+    let try_toggle_zoom = {
         let img_natural_size = img_natural_size;
         let mut spread_zoomed = spread_zoomed;
         let mut pan_x = pan_x;
+        let mut portrait_zoomed = portrait_zoomed;
+        let mut portrait_quadrant = portrait_quadrant;
         move || {
             if spread_zoomed() {
                 spread_zoomed.set(false);
                 pan_x.set(0.0);
                 return;
             }
+            if portrait_zoomed() {
+                portrait_zoomed.set(false);
+                portrait_quadrant.set(0);
+                return;
+            }
             if !is_portrait() {
                 return;
             }
             if let Some((w, h)) = img_natural_size() {
-                if h >= w {
-                    return; // Portrait page — not a double spread.
+                if h < w {
+                    // Landscape page → double-spread zoom (pan horizontally).
+                    spread_zoomed.set(true);
+                    pan_x.set(0.0);
+                } else {
+                    // Portrait page → quadrant zoom (start top-right).
+                    portrait_zoomed.set(true);
+                    portrait_quadrant.set(0);
                 }
-                spread_zoomed.set(true);
-                pan_x.set(0.0);
             }
         }
     };
@@ -195,10 +216,38 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
         }
     };
 
+    // Advance to the next portrait zoom quadrant; stays at the last quadrant if
+    // already there (mirrors spread zoom which clamps pan position at the edge).
+    let handle_portrait_advance = {
+        let mut portrait_quadrant = portrait_quadrant;
+        move || {
+            let q = portrait_quadrant();
+            if q + 1 < PORTRAIT_QUADRANT_COUNT {
+                portrait_quadrant.set(q + 1);
+            }
+            // At the last quadrant: do nothing — the user must toggle zoom off.
+        }
+    };
+
+    // Retreat to the previous portrait zoom quadrant; stays at the first
+    // quadrant if already there (same boundary convention as spread zoom).
+    let handle_portrait_retreat = {
+        let mut portrait_quadrant = portrait_quadrant;
+        move || {
+            let q = portrait_quadrant();
+            if q > 0 {
+                portrait_quadrant.set(q - 1);
+            }
+            // At the first quadrant: do nothing — the user must toggle zoom off.
+        }
+    };
+
     // ----- Navigate left / right (shared by tap zones and gamepad) -----
     let handle_navigate_left = {
         let mut handle_pan_left = handle_pan_left.clone();
         let mut handle_pan_right = handle_pan_right.clone();
+        let mut handle_portrait_advance = handle_portrait_advance.clone();
+        let mut handle_portrait_retreat = handle_portrait_retreat.clone();
         let manga_id = manga_id.clone();
         move || {
             let current_page = page_signal();
@@ -214,19 +263,24 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 .position(|c| c.id.0 == current_chapter_id)
                 .unwrap_or(0);
             let db = db_signal.read().clone();
+            let rtl = reader_config_signal().rtl_taps;
 
             if spread_zoomed() {
-                if reader_config_signal().rtl_taps {
+                if rtl {
                     handle_pan_left();
                 } else {
                     handle_pan_right();
                 }
-            } else {
-                let delta: isize = if reader_config_signal().rtl_taps {
-                    1
+            } else if portrait_zoomed() {
+                // RTL: left tap = "next" in reading order → advance quadrant.
+                // LTR: left tap = "prev" in reading order → retreat quadrant.
+                if rtl {
+                    handle_portrait_advance();
                 } else {
-                    -1
-                };
+                    handle_portrait_retreat();
+                }
+            } else {
+                let delta: isize = if rtl { 1 } else { -1 };
                 go_to_page(
                     current_page as isize + delta,
                     &manga_id,
@@ -243,6 +297,8 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     let handle_navigate_right = {
         let mut handle_pan_left = handle_pan_left.clone();
         let mut handle_pan_right = handle_pan_right.clone();
+        let mut handle_portrait_advance = handle_portrait_advance.clone();
+        let mut handle_portrait_retreat = handle_portrait_retreat.clone();
         let manga_id = manga_id.clone();
         move || {
             let current_page = page_signal();
@@ -258,19 +314,24 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 .position(|c| c.id.0 == current_chapter_id)
                 .unwrap_or(0);
             let db = db_signal.read().clone();
+            let rtl = reader_config_signal().rtl_taps;
 
             if spread_zoomed() {
-                if reader_config_signal().rtl_taps {
+                if rtl {
                     handle_pan_right();
                 } else {
                     handle_pan_left();
                 }
-            } else {
-                let delta: isize = if reader_config_signal().rtl_taps {
-                    -1
+            } else if portrait_zoomed() {
+                // LTR: right tap = "next" in reading order → advance quadrant.
+                // RTL: right tap = "prev" in reading order → retreat quadrant.
+                if rtl {
+                    handle_portrait_retreat();
                 } else {
-                    1
-                };
+                    handle_portrait_advance();
+                }
+            } else {
+                let delta: isize = if rtl { -1 } else { 1 };
                 go_to_page(
                     current_page as isize + delta,
                     &manga_id,
@@ -290,7 +351,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
 
     use_gamepad(gamepad_config, {
         let mut overlay_visible = overlay_visible;
-        let mut try_toggle_spread_zoom = try_toggle_spread_zoom.clone();
+        let mut try_toggle_zoom = try_toggle_zoom.clone();
         let mut gp_navigate_left = handle_navigate_left.clone();
         let mut gp_navigate_right = handle_navigate_right.clone();
 
@@ -301,7 +362,7 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 overlay_visible.set(!overlay_visible());
             }
             Action::ToggleSpreadZoom => {
-                try_toggle_spread_zoom();
+                try_toggle_zoom();
             }
             Action::GoBack => {
                 navigator().push(Route::Library {
@@ -465,11 +526,14 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
     let chapter_meta = chapter_meta_signal.read().clone();
     let manga_title = manga_title_signal.read().clone();
 
-    let is_zoomed = spread_zoomed();
+    let is_spread_zoomed = spread_zoomed();
+    let is_portrait_zoomed = portrait_zoomed();
     let current_pan_x = pan_x();
+    let current_quadrant = portrait_quadrant();
+    let current_natural_size = img_natural_size();
 
     // Clone handlers for tap zones (closures must own their data).
-    let mut tap_toggle_zoom = try_toggle_spread_zoom.clone();
+    let mut tap_toggle_zoom = try_toggle_zoom.clone();
     let mut tap_navigate_left = handle_navigate_left;
     let mut tap_navigate_right = handle_navigate_right;
 
@@ -492,21 +556,45 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                         class: "text-[#555] text-base",
                         "Page not available"
                     }
-                } else if is_zoomed {
+                } else if is_spread_zoomed {
                     // Spread-zoom mode: fit height, overflow width, pan horizontally.
                     // max-width: none overrides Tailwind/browser defaults that would
                     // otherwise constrain width and cause aspect-ratio stretching.
                     {
-                        let img_style = format!(
-                            "height: 100dvh; width: auto; max-width: none; position: absolute; \
-                             right: 0; transform: translateX({}px); user-select: none; display: block;",
-                            current_pan_x
-                        );
+                        let img_style = spread_zoom_image_style(current_pan_x);
                         rsx! {
                             div {
                                 class: "w-full h-full overflow-hidden relative",
                                 img {
                                     style: "{img_style}",
+                                    src: current_blob_url.clone().unwrap_or_default(),
+                                    alt: "Manga page {page}",
+                                }
+                            }
+                        }
+                    }
+                } else if is_portrait_zoomed {
+                    // Portrait-zoom mode: 2× width, one quadrant visible at a time.
+                    // Quadrant order: top-right → top-left → bottom-right → bottom-left.
+                    // Invariant: portrait_zoomed is only set to true after img_natural_size
+                    // is Some, so the else branch here is purely a safety fallback.
+                    {
+                        if let Some((nw, nh)) = current_natural_size {
+                            let img_style = portrait_zoom_image_style(current_quadrant, nw, nh);
+                            rsx! {
+                                div {
+                                    class: "w-full h-full overflow-hidden relative",
+                                    img {
+                                        style: "{img_style}",
+                                        src: current_blob_url.clone().unwrap_or_default(),
+                                        alt: "Manga page {page}",
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                img {
+                                    class: "max-w-full max-h-dvh object-contain block select-none",
                                     src: current_blob_url.clone().unwrap_or_default(),
                                     alt: "Manga page {page}",
                                 }
