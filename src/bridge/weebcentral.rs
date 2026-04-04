@@ -55,12 +55,7 @@ async fn proxy_get<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, String>
         .send()
         .await
         .map_err(|e| {
-            if e.is_connect() {
-                format!(
-                    "Could not connect to the proxy. Make sure it is running and the URL is correct. ({})",
-                    e
-                )
-            } else if e.is_timeout() {
+            if e.is_timeout() {
                 format!(
                     "Connection to the proxy timed out. Make sure it is reachable on your network. ({})",
                     e
