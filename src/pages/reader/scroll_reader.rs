@@ -80,9 +80,14 @@ fn container_height() -> f64 {
         .unwrap_or(800.0)
 }
 
-/// Determine the index of the currently visible page by checking which page
-/// element's top edge is closest to (but not past) the vertical midpoint of
-/// the container's visible area.
+/// Determine the index of the currently visible page.
+///
+/// **Algorithm**: iterates through page elements in order; the "current page"
+/// is the *last* one whose top edge (from `getBoundingClientRect().top`) is
+/// at or above the vertical midpoint of the container's visible area.
+/// That is, we advance the current-page pointer for every page whose top has
+/// scrolled past the midpoint, which naturally yields the page whose content
+/// occupies the largest portion of the upper half of the screen.
 fn visible_page_index(page_count: usize) -> usize {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return 0;
@@ -230,22 +235,30 @@ pub fn ScrollReaderView(
     };
 
     // ----- Navigate left / right -----
+
+    // Shared helper: snapshots the current chapter navigation context from
+    // reactive signals.  Both direction handlers call this to avoid repeating
+    // the same signal reads.
+    let nav_ctx = move || {
+        let current_chapter_id = chapter_id_signal();
+        let all_chapters = chapters_signal.read().clone();
+        let current_idx = all_chapters
+            .iter()
+            .position(|c| c.id.0 == current_chapter_id)
+            .unwrap_or(0);
+        let chapter_pages = chapter_meta_signal
+            .read()
+            .as_ref()
+            .map(|c| c.page_count)
+            .unwrap_or(1);
+        let db = db_signal.read().clone();
+        (chapter_pages, all_chapters, current_chapter_id, current_idx, db)
+    };
+
     let handle_navigate_right = {
         let manga_id = manga_id.clone();
         move || {
-            let chapter_pages = chapter_meta_signal
-                .read()
-                .as_ref()
-                .map(|c| c.page_count)
-                .unwrap_or(1);
-            let all_chapters = chapters_signal.read().clone();
-            let current_chapter_id = chapter_id_signal();
-            let current_idx = all_chapters
-                .iter()
-                .position(|c| c.id.0 == current_chapter_id)
-                .unwrap_or(0);
-            let db = db_signal.read().clone();
-
+            let (chapter_pages, all_chapters, current_chapter_id, current_idx, db) = nav_ctx();
             if at_bottom_signal() {
                 // At the bottom → advance to the next chapter.
                 go_to_page(
@@ -266,19 +279,7 @@ pub fn ScrollReaderView(
     let handle_navigate_left = {
         let manga_id = manga_id.clone();
         move || {
-            let chapter_pages = chapter_meta_signal
-                .read()
-                .as_ref()
-                .map(|c| c.page_count)
-                .unwrap_or(1);
-            let all_chapters = chapters_signal.read().clone();
-            let current_chapter_id = chapter_id_signal();
-            let current_idx = all_chapters
-                .iter()
-                .position(|c| c.id.0 == current_chapter_id)
-                .unwrap_or(0);
-            let db = db_signal.read().clone();
-
+            let (chapter_pages, all_chapters, current_chapter_id, current_idx, db) = nav_ctx();
             if at_top_signal() {
                 // At the top → go to the previous chapter.
                 go_to_page(
