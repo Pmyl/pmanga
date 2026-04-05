@@ -5,10 +5,12 @@
 //! - **Spread zoom**: landscape (double-spread) pages are fitted to viewport
 //!   height so their full width overflows; the user pans left/right.
 //! - **Portrait zoom**: portrait (single-page) images on a portrait screen are
-//!   zoomed to 2× width and stepped through 6 sextant positions.  The middle
-//!   column shows the image at x = -vw/2, overlapping both the right and left
-//!   columns.  Reading order:
-//!   top-right → top-middle → top-left → bottom-right → bottom-middle → bottom-left.
+//!   zoomed to 2× width and stepped through 9 nonet positions (3 cols × 3 rows).
+//!   The middle column shows the image at x = -vw/2, overlapping both the right
+//!   and left columns.  Reading order:
+//!   top-right → top-middle → top-left →
+//!   middle-right → middle-middle → middle-left →
+//!   bottom-right → bottom-middle → bottom-left.
 
 use super::viewport::{viewport_height, viewport_width};
 
@@ -32,26 +34,29 @@ pub fn spread_zoom_image_style(pan_x: f64) -> String {
 // Portrait zoom
 // ---------------------------------------------------------------------------
 
-/// Sextant index for portrait zoom mode.
+/// Nonet index for portrait zoom mode.
 ///
-/// | Value | Position      |
-/// |-------|---------------|
-/// | 0     | Top-right     |
-/// | 1     | Top-middle    |
-/// | 2     | Top-left      |
-/// | 3     | Bottom-right  |
-/// | 4     | Bottom-middle |
-/// | 5     | Bottom-left   |
+/// | Value | Position        |
+/// |-------|-----------------|
+/// | 0     | Top-right       |
+/// | 1     | Top-middle      |
+/// | 2     | Top-left        |
+/// | 3     | Middle-right    |
+/// | 4     | Middle-middle   |
+/// | 5     | Middle-left     |
+/// | 6     | Bottom-right    |
+/// | 7     | Bottom-middle   |
+/// | 8     | Bottom-left     |
 pub type PortraitQuadrant = u8;
 
-/// Total number of sextants in portrait zoom mode.
-pub const PORTRAIT_QUADRANT_COUNT: PortraitQuadrant = 6;
+/// Total number of nonets in portrait zoom mode.
+pub const PORTRAIT_QUADRANT_COUNT: PortraitQuadrant = 9;
 
 /// Returns the CSS `style` attribute string for a portrait-zoom image.
 ///
 /// The image is displayed at 2× viewport width (same zoom as the original
-/// quadrant mode) and translated to one of six sextant positions.  The middle
-/// column position (`sextant % 3 == 1`) sits at x = -vw/2, intentionally
+/// quadrant mode) and translated to one of nine nonet positions.  The middle
+/// column position (`nonet % 3 == 1`) sits at x = -vw/2, intentionally
 /// overlapping both the right and left columns.
 pub fn portrait_zoom_image_style(
     quadrant: PortraitQuadrant,
@@ -68,14 +73,18 @@ pub fn portrait_zoom_image_style(
     )
 }
 
-/// Computes the CSS `translate(x, y)` offset (in pixels) that brings `sextant`
+/// Computes the CSS `translate(x, y)` offset (in pixels) that brings `nonet`
 /// into the visible viewport.
 ///
 /// The image is rendered at `width = 2 × viewport_width`.
-/// Column positions (sextant % 3):
+/// Column positions (nonet % 3):
 ///   0 (right)  → x = -vw      (right edge of image at viewport right)
 ///   1 (middle) → x = -vw/2    (overlaps both right and left columns)
 ///   2 (left)   → x = 0        (left edge of image at viewport left)
+/// Row positions (nonet / 3):
+///   0 (top)    → y = 0
+///   1 (middle) → y = -(rendered_h - vh) / 2
+///   2 (bottom) → y = -(rendered_h - vh)
 fn portrait_quadrant_translate(
     quadrant: PortraitQuadrant,
     natural_w: u32,
@@ -91,21 +100,25 @@ fn portrait_quadrant_translate(
         0.0
     };
 
-    // Horizontal: column = sextant % 3.
+    // Horizontal: column = nonet % 3.
     //   0 (right)  → x = -vw      (same as original right quadrant)
     //   1 (middle) → x = -vw/2    (midpoint, shows overlap with both sides)
     //   2 (left)   → x = 0        (same as original left quadrant)
     let x = match quadrant % 3 {
-        0 => -vw,       // right edge of 2×vw image aligns with viewport right
-        1 => -(vw / 2.0), // midpoint of 2×vw image centred in viewport
-        _ => 0.0,       // left edge of image aligns with viewport left
+        0 => -vw,             // right edge of 2×vw image aligns with viewport right
+        1 => -(vw / 2.0),     // midpoint of 2×vw image centred in viewport
+        _ => 0.0,             // left edge of image aligns with viewport left
     };
 
-    // Vertical: sextants 0–2 → top row; sextants 3–5 → bottom row.
-    let y = if quadrant < 3 {
-        0.0
-    } else {
-        -(rendered_height - vh).max(0.0)
+    // Vertical: row = nonet / 3.
+    //   0 (top)    → y = 0
+    //   1 (middle) → y = -(rendered_h - vh) / 2
+    //   2 (bottom) → y = -(rendered_h - vh)
+    let overflow = (rendered_height - vh).max(0.0);
+    let y = match quadrant / 3 {
+        0 => 0.0,
+        1 => -(overflow / 2.0),
+        _ => -overflow,
     };
 
     (x, y)
