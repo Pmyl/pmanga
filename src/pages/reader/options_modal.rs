@@ -57,6 +57,26 @@ pub fn ReaderOptionsModal(
                     class: "flex items-center justify-between gap-3 py-1",
                     label {
                         class: "text-sm text-[#ccc] flex-1 cursor-pointer",
+                        r#for: "vertical-scroll-toggle",
+                        "Vertical scroll (webtoon style)"
+                    }
+                    input {
+                        id: "vertical-scroll-toggle",
+                        r#type: "checkbox",
+                        class: "w-4 h-4 cursor-pointer accent-[#ccc]",
+                        checked: reader_config.read().vertical_scroll,
+                        oninput: move |_| {
+                            let new_val = !reader_config.read().vertical_scroll;
+                            reader_config.write().vertical_scroll = new_val;
+                            reader_config.read().save();
+                        },
+                    }
+                }
+
+                div {
+                    class: "flex items-center justify-between gap-3 py-1",
+                    label {
+                        class: "text-sm text-[#ccc] flex-1 cursor-pointer",
                         r#for: "rtl-taps-toggle",
                         "Left tap = Next Page / Zoom move right (manga style)"
                     }

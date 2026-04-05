@@ -11,11 +11,19 @@ pub struct ReaderConfig {
     /// When `true`, the LEFT tap zone advances to the NEXT page (manga / RTL
     /// style).  When `false` (default), LEFT = previous page (LTR style).
     pub rtl_taps: bool,
+    /// When `true`, all pages of the chapter are rendered vertically for
+    /// continuous (webtoon-style) scrolling.  When `false` (default), pages
+    /// are shown one at a time with tap-zone navigation.
+    #[serde(default)]
+    pub vertical_scroll: bool,
 }
 
 impl Default for ReaderConfig {
     fn default() -> Self {
-        Self { rtl_taps: false }
+        Self {
+            rtl_taps: false,
+            vertical_scroll: false,
+        }
     }
 }
 
