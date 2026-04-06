@@ -20,13 +20,15 @@ use crate::{
 // Utilities
 // ---------------------------------------------------------------------------
 
-/// Returns the smallest chapter number that comes strictly after `n`.
+/// Returns the next chapter number after `n` at 0.1-chapter granularity.
 ///
-/// Used as an inclusive lower bound when filtering chapters to download so that
-/// the chapter at `n` itself is excluded while fractional successors (e.g. 10.5
-/// after last_downloaded=10.0) are still included.
+/// This helper assumes chapter numbers are tracked in tenths. It is used as an
+/// inclusive lower bound when filtering chapters to download so that the chapter
+/// at `n` itself is excluded while fractional successors (e.g. 10.5 after
+/// last_downloaded=10.0) are still included.
 pub fn next_chapter_after(n: f32) -> f32 {
-    n + 0.1
+    let tenths = (n * 10.0).round() as i32;
+    (tenths + 1) as f32 / 10.0
 }
 
 /// Wait `ms` milliseconds (browser/WASM-compatible).
