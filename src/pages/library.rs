@@ -836,6 +836,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                 LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
                                 LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
                             };
+                            let mark_unread_chapters = mark_read_chapters.clone();
 
                             rsx! {
                                 LibraryEntryCard {
@@ -885,6 +886,22 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                                 if let Err(e) = db.save_progress(&progress).await {
                                                     web_sys::console::error_1(
                                                         &format!("mark_read save_progress error: {e}").into(),
+                                                    );
+                                                }
+                                            }
+                                            *refresh_counter.write() += 1;
+                                        });
+                                    },
+                                    on_mark_unread: move |_| {
+                                        let Some(db) = db_signal.read().clone() else { return };
+                                        let chapters = mark_unread_chapters.clone();
+                                        spawn(async move {
+                                            for chapter in &chapters {
+                                                if let Err(e) =
+                                                    db.delete_progress_for_chapter(&chapter.id).await
+                                                {
+                                                    web_sys::console::error_1(
+                                                        &format!("mark_unread delete_progress error: {e}").into(),
                                                     );
                                                 }
                                             }
