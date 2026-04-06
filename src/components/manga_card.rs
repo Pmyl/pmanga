@@ -20,10 +20,15 @@ pub struct MangaCardProps {
     pub progress_value: f32,
     pub pages_read: u32,
     pub total_pages: u32,
+    /// Highest chapter number ever downloaded.  Used when the manga is empty
+    /// to show "All caught up to ch. XX" instead of a progress bar.
+    pub last_downloaded_chapter: Option<f32>,
     /// When true, renders a 🌐 badge indicating a WeebCentral (web) manga.
     #[props(default = false)]
     pub is_web: bool,
     pub on_click: EventHandler<()>,
+    /// When provided, renders a delete (🗑) button on the card.
+    pub on_delete: Option<EventHandler<()>>,
 }
 
 #[component]
@@ -55,6 +60,18 @@ pub fn MangaCard(props: MangaCardProps) -> Element {
                         "🌐"
                     }
                 }
+                // Delete button (only rendered when a handler is provided)
+                if let Some(on_delete) = props.on_delete.clone() {
+                    button {
+                        class: "absolute top-1.5 right-1.5 border-0 cursor-pointer text-xs px-1.5 py-0.5 rounded bg-[#8b1a1a]/70 text-[#f0f0f0] active:bg-[#8b1a1a]",
+                        title: "Delete manga",
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            on_delete.call(());
+                        },
+                        "🗑"
+                    }
+                }
             }
 
             div {
@@ -63,10 +80,25 @@ pub fn MangaCard(props: MangaCardProps) -> Element {
                     class: "text-xs font-medium truncate",
                     "{props.manga.title}"
                 }
-                ProgressBar {
-                    value: props.progress_value,
-                    pages_read: props.pages_read,
-                    total_pages: props.total_pages,
+                if props.total_pages == 0 {
+                    small {
+                        class: "text-[0.65rem] text-[#888]",
+                        if let Some(n) = props.last_downloaded_chapter {
+                            if n == n.floor() {
+                                "All caught up to ch. {n:.0}"
+                            } else {
+                                "All caught up to ch. {n:.1}"
+                            }
+                        } else {
+                            "New"
+                        }
+                    }
+                } else {
+                    ProgressBar {
+                        value: props.progress_value,
+                        pages_read: props.pages_read,
+                        total_pages: props.total_pages,
+                    }
                 }
             }
         }

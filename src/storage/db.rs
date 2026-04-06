@@ -308,6 +308,18 @@ impl Db {
         array_to_vec(val)
     }
 
+    /// Load a single [`MangaMeta`] by id.  Returns `None` if not found.
+    pub async fn load_manga(&self, id: &MangaId) -> Result<Option<MangaMeta>, String> {
+        let store = self.ro_store(STORE_MANGAS)?;
+        let key = JsValue::from_str(&id.0);
+        let req = store.get(&key).map_err(|e| format!("{:?}", e))?;
+        let val = await_request(request_to_future(&req)).await?;
+        if val.is_undefined() || val.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(from_js(val)?))
+    }
+
     /// Delete a manga by id.
     pub async fn delete_manga(&self, id: &MangaId) -> Result<(), String> {
         let store = self.rw_store(STORE_MANGAS)?;

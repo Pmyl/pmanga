@@ -36,6 +36,45 @@ async fn sleep_ms(ms: i32) {
 }
 
 // ---------------------------------------------------------------------------
+// update_manga_after_chapter_delete — helper for delete handlers
+// ---------------------------------------------------------------------------
+
+/// After a batch of chapters is deleted, update `MangaMeta` to track the
+/// highest chapter number ever downloaded (`latest_downloaded_chapter`) and,
+/// for WeebCentral chapters that carry CDN URLs, persist a cover fallback URL
+/// (`cover_url_fallback`) so the shelf card can show something when the manga
+/// is empty.
+async fn update_manga_after_chapter_delete(db: &Db, manga_id: &MangaId, deleted: &[ChapterMeta]) {
+    let mut meta = match db.load_manga(manga_id).await {
+        Ok(Some(m)) => m,
+        _ => return,
+    };
+
+    // Find the chapter with the highest chapter_number in the deleted batch.
+    let Some(highest) = deleted
+        .iter()
+        .max_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number))
+    else {
+        return;
+    };
+
+    let current_latest = meta.latest_downloaded_chapter.unwrap_or(f32::NEG_INFINITY);
+
+    // latest_downloaded_chapter only increases.
+    if highest.chapter_number >= current_latest {
+        meta.latest_downloaded_chapter = Some(highest.chapter_number);
+        // Update the cover fallback from the highest chapter's CDN URL.
+        if let Some(url) = highest.page_urls.first() {
+            meta.cover_url_fallback = Some(url.clone());
+        }
+    }
+
+    if let Err(e) = db.save_manga(&meta).await {
+        web_sys::console::error_1(&format!("save_manga error after delete: {e}").into());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-entry display data (assembled asynchronously after DB load)
 // ---------------------------------------------------------------------------
 
@@ -282,12 +321,12 @@ pub fn LibraryPage(manga_id: String) -> Element {
         let mid = manga_id_for_delete.clone();
 
         spawn(async move {
-            let chapter_ids: Vec<ChapterId> = match &entry {
-                LibraryEntry::Tankobon { chapters, .. } => {
-                    chapters.iter().map(|c| c.id.clone()).collect()
-                }
-                LibraryEntry::LoneChapter(ch) => vec![ch.id.clone()],
+            // Collect full chapter objects for chapter_number + page_urls.
+            let chapters: Vec<ChapterMeta> = match &entry {
+                LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
             };
+            let chapter_ids: Vec<ChapterId> = chapters.iter().map(|c| c.id.clone()).collect();
 
             for cid in &chapter_ids {
                 if let Err(e) = db.delete_chapter(cid).await {
@@ -312,26 +351,8 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 }
             }
 
-            // Check if any chapters remain; if none, delete the manga entirely.
-            match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
-                Ok(remaining) if remaining.is_empty() => {
-                    if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
-                        web_sys::console::error_1(&format!("delete_manga error: {e}").into());
-                    }
-                    // Clear the last-opened position so the app doesn't
-                    // try to reopen a page from a manga that no longer exists.
-                    clear_last_opened();
-                    // Navigate back to shelf since the manga is gone.
-                    navigator().push(Route::Shelf {});
-                    return;
-                }
-                Err(e) => {
-                    web_sys::console::error_1(
-                        &format!("load_chapters_for_manga error: {e}").into(),
-                    );
-                }
-                _ => {}
-            }
+            // Update manga metadata: record latest chapter + cover fallback.
+            update_manga_after_chapter_delete(&*db, &MangaId(mid.clone()), &chapters).await;
 
             *refresh_counter.write() += 1;
         });
@@ -358,61 +379,47 @@ pub fn LibraryPage(manga_id: String) -> Element {
             .collect();
 
         spawn(async move {
-            for entry in &entries_to_delete {
-                let chapter_ids: Vec<ChapterId> = match entry {
-                    LibraryEntry::Tankobon { chapters, .. } => {
-                        chapters.iter().map(|c| c.id.clone()).collect()
-                    }
-                    LibraryEntry::LoneChapter(ch) => vec![ch.id.clone()],
-                };
-                for cid in &chapter_ids {
-                    if let Err(e) = db.delete_chapter(cid).await {
-                        web_sys::console::error_1(&format!("delete_chapter error: {e}").into());
-                    }
-                    if let Err(e) = db.delete_pages_for_chapter(cid).await {
-                        web_sys::console::error_1(
-                            &format!("delete_pages_for_chapter error: {e}").into(),
-                        );
-                    }
-                    if let Err(e) = db.delete_progress_for_chapter(cid).await {
-                        web_sys::console::error_1(
-                            &format!("delete_progress_for_chapter error: {e}").into(),
-                        );
-                    }
+            // Collect full chapter objects for all selected entries.
+            let all_deleted_chapters: Vec<ChapterMeta> = entries_to_delete
+                .iter()
+                .flat_map(|e| match e {
+                    LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                    LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
+                })
+                .collect();
+
+            for chapter in &all_deleted_chapters {
+                let cid = &chapter.id;
+                if let Err(e) = db.delete_chapter(cid).await {
+                    web_sys::console::error_1(&format!("delete_chapter error: {e}").into());
+                }
+                if let Err(e) = db.delete_pages_for_chapter(cid).await {
+                    web_sys::console::error_1(
+                        &format!("delete_pages_for_chapter error: {e}").into(),
+                    );
+                }
+                if let Err(e) = db.delete_progress_for_chapter(cid).await {
+                    web_sys::console::error_1(
+                        &format!("delete_progress_for_chapter error: {e}").into(),
+                    );
                 }
             }
 
-            let all_deleted_chapter_ids: Vec<String> = entries_to_delete
-                .iter()
-                .flat_map(|e| match e {
-                    LibraryEntry::Tankobon { chapters, .. } => {
-                        chapters.iter().map(|c| c.id.0.clone()).collect::<Vec<_>>()
-                    }
-                    LibraryEntry::LoneChapter(ch) => vec![ch.id.0.clone()],
-                })
-                .collect();
+            let all_deleted_chapter_ids: Vec<String> =
+                all_deleted_chapters.iter().map(|c| c.id.0.clone()).collect();
             if let Some(LastOpened::Reader { chapter_id, .. }) = load_last_opened() {
                 if all_deleted_chapter_ids.contains(&chapter_id) {
                     clear_last_opened();
                 }
             }
 
-            match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
-                Ok(remaining) if remaining.is_empty() => {
-                    if let Err(e) = db.delete_manga(&MangaId(mid.clone())).await {
-                        web_sys::console::error_1(&format!("delete_manga error: {e}").into());
-                    }
-                    clear_last_opened();
-                    navigator().push(Route::Shelf {});
-                    return;
-                }
-                Err(e) => {
-                    web_sys::console::error_1(
-                        &format!("load_chapters_for_manga error: {e}").into(),
-                    );
-                }
-                _ => {}
-            }
+            // Update manga metadata: record latest chapter + cover fallback.
+            update_manga_after_chapter_delete(
+                &*db,
+                &MangaId(mid.clone()),
+                &all_deleted_chapters,
+            )
+            .await;
 
             *refresh_counter.write() += 1;
         });
@@ -474,13 +481,21 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                 let manga_id_open = manga_id_open.clone();
                                 spawn(async move {
                                     let existing = db
-                                        .load_chapters_for_manga(&MangaId(manga_id_open))
+                                        .load_chapters_for_manga(&MangaId(manga_id_open.clone()))
                                         .await
                                         .unwrap_or_default();
-                                    let default_from = existing
+                                    let max_existing = existing
                                         .iter()
                                         .map(|c| c.chapter_number)
                                         .fold(f32::NEG_INFINITY, f32::max);
+                                    // Also consider latest_downloaded_chapter so the default
+                                    // "From" is correct even after all chapters are deleted.
+                                    let latest_downloaded = manga_meta_signal
+                                        .read()
+                                        .as_ref()
+                                        .and_then(|m| m.latest_downloaded_chapter)
+                                        .unwrap_or(f32::NEG_INFINITY);
+                                    let default_from = max_existing.max(latest_downloaded);
                                     if default_from.is_finite() {
                                         // Round up to next whole chapter number.
                                         let next = (default_from.floor() as u32) + 1;
@@ -769,6 +784,34 @@ pub fn LibraryPage(manga_id: String) -> Element {
 
                                                 saved += 1;
                                                 sleep_ms(500).await;
+                                            }
+
+                                            // Update latest_downloaded_chapter in MangaMeta.
+                                            let max_synced = new_chapters
+                                                .iter()
+                                                .map(|c| c.number)
+                                                .fold(f32::NEG_INFINITY, f32::max);
+                                            if max_synced.is_finite() {
+                                                // Clone out of the signal first so we don't
+                                                // hold the read borrow when we write back.
+                                                let maybe_meta: Option<MangaMeta> =
+                                                    manga_meta_signal.read().clone();
+                                                if let Some(mut meta) = maybe_meta {
+                                                    let current_latest = meta
+                                                        .latest_downloaded_chapter
+                                                        .unwrap_or(f32::NEG_INFINITY);
+                                                    let new_latest =
+                                                        max_synced.max(current_latest);
+                                                    meta.latest_downloaded_chapter =
+                                                        Some(new_latest);
+                                                    if let Err(e) = db.save_manga(&meta).await {
+                                                        web_sys::console::error_1(
+                                                            &format!("save_manga error: {e}")
+                                                                .into(),
+                                                        );
+                                                    }
+                                                    *manga_meta_signal.write() = Some(meta);
+                                                }
                                             }
 
                                             sync_status.set(SyncStatus::Done {

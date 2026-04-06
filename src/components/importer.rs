@@ -1049,6 +1049,8 @@ async fn run_import(
                         title: row.manga_name.clone(),
                         mangadex_id: None,
                         source: crate::storage::models::MangaSource::Local,
+                        latest_downloaded_chapter: None,
+                        cover_url_fallback: None,
                     };
                     db.save_manga(&new_manga).await?;
                     existing_mangas.push(new_manga.clone());
