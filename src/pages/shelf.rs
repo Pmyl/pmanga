@@ -1,8 +1,10 @@
 use std::rc::Rc;
 
 use crate::{
+    bridge::weebcentral::{fetch_chapter_list, fetch_chapter_pages},
     components::{
         confirm_dialog::ConfirmDialog,
+        import_source_dialog::ImportSourceDialog,
         importer::Importer,
         manga_card::MangaCard,
         weebcentral_importer::WeebCentralImporter,
@@ -10,14 +12,31 @@ use crate::{
     routes::Route,
     storage::{
         db::Db,
-        models::{LastOpened, MangaId, MangaSource},
+        models::{ChapterId, ChapterMeta, ChapterSource, LastOpened, MangaId, MangaSource},
         progress::{
             clear_last_opened, is_startup_redirect_done, load_last_opened,
-            mark_startup_redirect_done, save_last_opened,
+            load_proxy_url, mark_startup_redirect_done, save_last_opened,
         },
+        tankobon::{fetch_tankobon_csv, lookup_tankobon},
     },
 };
 use dioxus::prelude::*;
+use js_sys::Promise;
+use wasm_bindgen_futures::JsFuture;
+
+// ---------------------------------------------------------------------------
+// sleep_ms — same pattern as library.rs
+// ---------------------------------------------------------------------------
+
+async fn sleep_ms(ms: i32) {
+    let promise = Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .expect("no window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .expect("set_timeout failed");
+    });
+    JsFuture::from(promise).await.unwrap();
+}
 
 // ---------------------------------------------------------------------------
 // Per-manga display data (assembled asynchronously after DB load)
@@ -36,6 +55,28 @@ struct MangaDisplayData {
     /// Highest chapter number ever downloaded (from MangaMeta).
     /// Used to show "All caught up to ch. XX" when the manga is empty.
     last_downloaded_chapter: Option<f32>,
+    /// WeebCentral series URL, if applicable. Used for sync-all-caught-up.
+    series_url: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Sync-all-caught-up status
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq)]
+enum SyncAllStatus {
+    Idle,
+    Syncing {
+        status: String,
+        current: usize,
+        total: usize,
+    },
+    Done {
+        total_new: usize,
+    },
+    Error {
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -46,6 +87,9 @@ struct MangaDisplayData {
 pub fn ShelfPage() -> Element {
     // Open the DB once per mount.
     let mut db_signal: Signal<Option<Rc<Db>>> = use_signal(|| None);
+
+    // Controls whether the import-source picker modal is visible.
+    let mut show_import_source: Signal<bool> = use_signal(|| false);
 
     // Controls whether the importer modal is visible.
     let mut show_importer: Signal<bool> = use_signal(|| false);
@@ -61,6 +105,9 @@ pub fn ShelfPage() -> Element {
 
     // manga_id pending deletion confirmation.
     let mut pending_delete_manga: Signal<Option<String>> = use_signal(|| None);
+
+    // Status for the sync-all-caught-up operation.
+    let mut sync_all_status: Signal<SyncAllStatus> = use_signal(|| SyncAllStatus::Idle);
 
     // Open DB on mount.
     use_effect(move || {
@@ -201,6 +248,10 @@ pub fn ShelfPage() -> Element {
                     total_pages,
                     is_web: matches!(manga.source, MangaSource::WeebCentral { .. }),
                     last_downloaded_chapter: manga.latest_downloaded_chapter,
+                    series_url: match &manga.source {
+                        MangaSource::WeebCentral { series_url } => Some(series_url.clone()),
+                        _ => None,
+                    },
                 });
             }
 
@@ -226,20 +277,289 @@ pub fn ShelfPage() -> Element {
                         "⚙"
                     }
                     button {
-                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#5a9fd4] text-black font-semibold active:bg-[#4a8fc4]",
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#5a9fd4] text-black font-semibold active:bg-[#4a8fc4] disabled:opacity-50",
+                        disabled: matches!(*sync_all_status.read(), SyncAllStatus::Syncing { .. }),
                         onclick: move |_| {
-                            *show_wc_importer.write() = true;
+                            if matches!(*sync_all_status.read(), SyncAllStatus::Syncing { .. }) {
+                                return;
+                            }
+
+                            let Some(db) = db_signal.read().clone() else { return };
+
+                            let proxy_url = match load_proxy_url() {
+                                Some(u) if !u.trim().is_empty() => u,
+                                _ => {
+                                    sync_all_status.set(SyncAllStatus::Error {
+                                        message: "Proxy URL not configured. Go to Settings first.".to_string(),
+                                    });
+                                    return;
+                                }
+                            };
+
+                            // Collect all caught-up WeebCentral mangas.
+                            // "Caught up" = no chapters (but was previously synced)
+                            //            OR all downloaded chapters have been read.
+                            let caught_up: Vec<(String, String, String, Option<f32>)> =
+                                display_data
+                                    .read()
+                                    .iter()
+                                    .filter_map(|item| {
+                                        let series_url = item.series_url.clone()?;
+                                        let is_caught_up =
+                                            (item.total_pages == 0
+                                                && item.last_downloaded_chapter.is_some())
+                                                || (item.total_pages > 0
+                                                    && item.progress_value >= 1.0);
+                                        if is_caught_up {
+                                            Some((
+                                                item.manga_id.clone(),
+                                                item.title.clone(),
+                                                series_url,
+                                                item.last_downloaded_chapter,
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+
+                            if caught_up.is_empty() {
+                                sync_all_status.set(SyncAllStatus::Done { total_new: 0 });
+                                return;
+                            }
+
+                            let total_mangas = caught_up.len();
+                            sync_all_status.set(SyncAllStatus::Syncing {
+                                status: "Starting…".to_string(),
+                                current: 0,
+                                total: total_mangas,
+                            });
+
+                            spawn(async move {
+                                let csv_rows_snapshot = fetch_tankobon_csv().await;
+                                let mut grand_total_new = 0usize;
+
+                                for (idx, (manga_id, title, series_url, last_downloaded)) in
+                                    caught_up.iter().enumerate()
+                                {
+                                    sync_all_status.set(SyncAllStatus::Syncing {
+                                        status: format!("Fetching chapters for \"{title}\"…"),
+                                        current: idx + 1,
+                                        total: total_mangas,
+                                    });
+
+                                    let series_id = series_url
+                                        .split("/series/")
+                                        .nth(1)
+                                        .and_then(|s| s.split('/').next())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    let mut remote_chapters =
+                                        match fetch_chapter_list(&proxy_url, &series_id).await {
+                                            Ok(chs) => chs,
+                                            Err(e) => {
+                                                sync_all_status.set(SyncAllStatus::Error {
+                                                    message: format!(
+                                                        "Failed to fetch chapters for \"{title}\": {e}"
+                                                    ),
+                                                });
+                                                return;
+                                            }
+                                        };
+
+                                    remote_chapters
+                                        .sort_by(|a, b| a.number.total_cmp(&b.number));
+
+                                    let existing = match db
+                                        .load_chapters_for_manga(&MangaId(manga_id.clone()))
+                                        .await
+                                    {
+                                        Ok(chs) => chs,
+                                        Err(e) => {
+                                            sync_all_status.set(SyncAllStatus::Error {
+                                                message: format!(
+                                                    "Failed to load existing chapters for \"{title}\": {e}"
+                                                ),
+                                            });
+                                            return;
+                                        }
+                                    };
+
+                                    let existing_ids: std::collections::HashSet<String> =
+                                        existing.iter().map(|c| c.id.0.clone()).collect();
+
+                                    // For the "no chapters" case, use last_downloaded + 1 as a
+                                    // lower bound to avoid re-downloading deleted chapters.
+                                    // Floor is intentional: fractional chapter (e.g. 5.5) means
+                                    // sync from chapter 6 onwards, matching the library sync UI.
+                                    let from_ch: Option<f32> = if existing.is_empty() {
+                                        last_downloaded.map(|n| (n.floor() as u32 + 1) as f32)
+                                    } else {
+                                        None
+                                    };
+
+                                    let new_chapters: Vec<_> = remote_chapters
+                                        .into_iter()
+                                        .filter(|c| {
+                                            if existing_ids.contains(&c.id) {
+                                                return false;
+                                            }
+                                            if let Some(f) = from_ch {
+                                                if c.number < f {
+                                                    return false;
+                                                }
+                                            }
+                                            true
+                                        })
+                                        .collect();
+
+                                    let total_new = new_chapters.len();
+
+                                    for (ch_idx, chapter) in new_chapters.iter().enumerate() {
+                                        sync_all_status.set(SyncAllStatus::Syncing {
+                                            status: format!(
+                                                "\"{title}\" — ch. {} ({}/{})",
+                                                chapter.number,
+                                                ch_idx + 1,
+                                                total_new
+                                            ),
+                                            current: idx + 1,
+                                            total: total_mangas,
+                                        });
+
+                                        let pages =
+                                            match fetch_chapter_pages(&proxy_url, &chapter.id)
+                                                .await
+                                            {
+                                                Ok(p) => p,
+                                                Err(e) => {
+                                                    sync_all_status.set(SyncAllStatus::Error {
+                                                        message: format!(
+                                                            "Failed to fetch pages for ch. {} of \"{title}\": {e}",
+                                                            chapter.number
+                                                        ),
+                                                    });
+                                                    return;
+                                                }
+                                            };
+
+                                        let tankobon_number = lookup_tankobon(
+                                            title,
+                                            chapter.number,
+                                            &csv_rows_snapshot,
+                                        );
+
+                                        let chapter_meta = ChapterMeta {
+                                            id: ChapterId(chapter.id.clone()),
+                                            manga_id: MangaId(manga_id.clone()),
+                                            chapter_number: chapter.number,
+                                            tankobon_number,
+                                            filename: format!("Chapter {}", chapter.number),
+                                            page_count: pages.len() as u32,
+                                            source: ChapterSource::WeebCentral {
+                                                chapter_id: chapter.id.clone(),
+                                            },
+                                            page_urls: pages
+                                                .into_iter()
+                                                .map(|p| p.url)
+                                                .collect(),
+                                        };
+
+                                        if let Err(e) = db.save_chapter(&chapter_meta).await {
+                                            sync_all_status.set(SyncAllStatus::Error {
+                                                message: format!(
+                                                    "Failed to save ch. {} of \"{title}\": {e}",
+                                                    chapter.number
+                                                ),
+                                            });
+                                            return;
+                                        }
+
+                                        sleep_ms(500).await;
+                                    }
+
+                                    // Update latest_downloaded_chapter in MangaMeta.
+                                    let max_synced = new_chapters
+                                        .iter()
+                                        .map(|c| c.number)
+                                        .fold(f32::NEG_INFINITY, f32::max);
+                                    if max_synced.is_finite() {
+                                        if let Ok(Some(mut meta)) =
+                                            db.load_manga(&MangaId(manga_id.clone())).await
+                                        {
+                                            let current_latest = meta
+                                                .latest_downloaded_chapter
+                                                .unwrap_or(f32::NEG_INFINITY);
+                                            meta.latest_downloaded_chapter =
+                                                Some(max_synced.max(current_latest));
+                                            if let Err(e) = db.save_manga(&meta).await {
+                                                web_sys::console::error_1(
+                                                    &format!("save_manga error: {e}").into(),
+                                                );
+                                            }
+                                        }
+                                    }
+
+                                    grand_total_new += total_new;
+                                }
+
+                                sync_all_status.set(SyncAllStatus::Done {
+                                    total_new: grand_total_new,
+                                });
+                                *refresh_counter.write() += 1;
+                            });
                         },
-                        "🌐 WeebCentral"
+                        "↻ Sync"
                     }
                     button {
                         class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#e8b44a] text-black font-semibold active:bg-[#d4a03c]",
                         onclick: move |_| {
-                            *show_importer.write() = true;
+                            *show_import_source.write() = true;
                         },
                         "+ Import"
                     }
                 }
+            }
+
+            // Sync-all status banner
+            match sync_all_status.read().clone() {
+                SyncAllStatus::Idle => rsx! {},
+                SyncAllStatus::Syncing { ref status, current, total } => rsx! {
+                    div {
+                        class: "px-4 py-2 bg-[#1a2a3a] text-sm text-[#5a9fd4] border-b border-[#222] shrink-0",
+                        "{status} ({current}/{total})"
+                    }
+                },
+                SyncAllStatus::Done { total_new } => rsx! {
+                    div {
+                        class: "px-4 py-2 bg-[#1a2a1a] text-sm text-[#4caf50] border-b border-[#222] shrink-0 flex items-center justify-between",
+                        if total_new > 0 {
+                            {
+                                let word = if total_new == 1 { "chapter" } else { "chapters" };
+                                rsx! { span { "✓ Sync complete — {total_new} new {word} added." } }
+                            }
+                        } else {
+                            span { "✓ All caught-up manga are up to date." }
+                        }
+                        button {
+                            class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
+                            onclick: move |_| sync_all_status.set(SyncAllStatus::Idle),
+                            "✕"
+                        }
+                    }
+                },
+                SyncAllStatus::Error { ref message } => rsx! {
+                    div {
+                        class: "px-4 py-2 bg-[#2a1a1a] text-sm text-[#cf6679] border-b border-[#222] shrink-0 flex items-center justify-between",
+                        span { "{message}" }
+                        button {
+                            class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
+                            onclick: move |_| sync_all_status.set(SyncAllStatus::Idle),
+                            "✕"
+                        }
+                    }
+                },
             }
 
             div {
@@ -350,6 +670,23 @@ pub fn ShelfPage() -> Element {
                     },
                     on_cancel: move |_| {
                         *pending_delete_manga.write() = None;
+                    },
+                }
+            }
+
+            // Import source picker modal
+            if *show_import_source.read() {
+                ImportSourceDialog {
+                    on_local: move |_| {
+                        *show_import_source.write() = false;
+                        *show_importer.write() = true;
+                    },
+                    on_weebcentral: move |_| {
+                        *show_import_source.write() = false;
+                        *show_wc_importer.write() = true;
+                    },
+                    on_cancel: move |_| {
+                        *show_import_source.write() = false;
                     },
                 }
             }
