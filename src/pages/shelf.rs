@@ -379,12 +379,13 @@ pub fn ShelfPage() -> Element {
                                     let existing_ids: std::collections::HashSet<String> =
                                         existing.iter().map(|c| c.id.0.clone()).collect();
 
-                                    // For the "no chapters" case, use last_downloaded + 1 as a
-                                    // lower bound to avoid re-downloading deleted chapters.
-                                    // Floor is intentional: fractional chapter (e.g. 5.5) means
-                                    // sync from chapter 6 onwards, matching the library sync UI.
+                                    // For the "no chapters" case, exclude chapters already
+                                    // known to have been downloaded (and presumably deleted)
+                                    // to avoid re-downloading them.  We use a strict
+                                    // greater-than so fractional chapters (e.g. 10.5 after
+                                    // last_downloaded=10.0) are not accidentally skipped.
                                     let from_ch: Option<f32> = if existing.is_empty() {
-                                        last_downloaded.map(|n| (n.floor() as u32 + 1) as f32)
+                                        *last_downloaded
                                     } else {
                                         None
                                     };
@@ -396,7 +397,7 @@ pub fn ShelfPage() -> Element {
                                                 return false;
                                             }
                                             if let Some(f) = from_ch {
-                                                if c.number < f {
+                                                if c.number <= f {
                                                     return false;
                                                 }
                                             }

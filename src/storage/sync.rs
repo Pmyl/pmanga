@@ -128,11 +128,17 @@ pub async fn update_latest_downloaded_chapter(
     match db.load_manga(manga_id).await {
         Ok(Some(mut meta)) => {
             let current = meta.latest_downloaded_chapter.unwrap_or(f32::NEG_INFINITY);
-            meta.latest_downloaded_chapter = Some(max_new.max(current));
-            if let Err(e) = db.save_manga(&meta).await {
-                web_sys::console::error_1(&format!("save_manga error: {e}").into());
+            if max_new <= current {
+                return None;
             }
-            Some(meta)
+            meta.latest_downloaded_chapter = Some(max_new);
+            match db.save_manga(&meta).await {
+                Ok(()) => Some(meta),
+                Err(e) => {
+                    web_sys::console::error_1(&format!("save_manga error: {e}").into());
+                    None
+                }
+            }
         }
         _ => None,
     }
