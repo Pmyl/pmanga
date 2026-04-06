@@ -3,6 +3,7 @@ use std::process::Command;
 fn main() {
     // Re-run this script whenever the git HEAD changes (new commit or branch switch).
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
 
     let version = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

@@ -338,7 +338,7 @@ pub fn SettingsPage() -> Element {
 
                 // ── Version ───────────────────────────────────────────────
                 p {
-                    class: "text-xs text-[#444] pt-2",
+                    class: "text-xs text-[#666] pt-2",
                     "Version: {env!(\"APP_VERSION\")}"
                 }
             }
