@@ -470,14 +470,14 @@ pub fn ScrollReaderView(
     // `container_signal` so the hot-path scroll handler never has to call
     // window → document → getElementById again.
     //
-    // `loaded_count` tracks how many page images have fired their `onload`
+    // `images_loaded_count` tracks how many page images have fired their `onload`
     // event.  The effect subscribes to it (while the initial scroll is still
     // pending) so that it retries computing page tops each time another image
     // becomes available.  This is necessary because `img` elements have zero
     // height until their image data is downloaded; on a hard refresh the first
     // call to `compute_page_tops` therefore returns all-zero values, and
     // without the retry the scroll to the target page never happens.
-    let mut loaded_count: Signal<usize> = use_signal(|| 0);
+    let mut images_loaded_count: Signal<usize> = use_signal(|| 0);
     {
         let initial_page = page;
         let mut scrolled = use_signal(|| false);
@@ -488,7 +488,7 @@ pub fn ScrollReaderView(
             let mut prev_chapter = use_signal(|| chapter_id.clone());
             if *prev_chapter.peek() != chapter_id {
                 scrolled.set(false);
-                loaded_count.set(0);
+                images_loaded_count.set(0);
                 *page_tops_signal.write() = Vec::new();
                 prev_chapter.set(chapter_id.clone());
             }
@@ -502,10 +502,13 @@ pub fn ScrollReaderView(
             let count = urls.len();
             drop(urls); // release borrow before spawn captures signals
 
-            // Subscribe to loaded_count so this effect re-runs as images load,
-            // but only until the initial scroll has been committed.
+            // Establish a reactive dependency on images_loaded_count so that
+            // this effect re-runs each time a page image finishes loading.
+            // The dependency is only registered while the initial scroll is
+            // still pending; once scrolled is true the read is skipped,
+            // preventing unnecessary re-runs after the scroll is committed.
             if !scrolled() {
-                let _ = loaded_count();
+                let _ = images_loaded_count();
             }
 
             // Use spawn so elements are in the DOM when we query offsetTop.
@@ -626,7 +629,7 @@ pub fn ScrollReaderView(
                                                 src: "{src}",
                                                 alt: "Manga page {i}",
                                                 onload: move |_| {
-                                                    *loaded_count.write() += 1;
+                                                    *images_loaded_count.write() += 1;
                                                 },
                                             }
                                         } else {
@@ -640,7 +643,7 @@ pub fn ScrollReaderView(
                                                     src: "{src}",
                                                     alt: "Manga page {i}",
                                                     onload: move |_| {
-                                                        *loaded_count.write() += 1;
+                                                        *images_loaded_count.write() += 1;
                                                     },
                                                 }
                                             }
