@@ -336,6 +336,21 @@ pub fn SettingsPage() -> Element {
                     }
                 }
 
+                // ── Refresh ────────────────────────────────────────────────
+                div { class: "flex flex-col gap-2 pt-2 border-t border-[#222]",
+                    h2 { class: "text-base font-semibold text-[#ccc]", "Refresh" }
+                    p {
+                        class: "text-sm text-[#666]",
+                        "Reload the current page. Also available as a configurable gamepad action."
+                    }
+                    button {
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333] self-start",
+                        onclick: move |_| {
+                            crate::bridge::js::reload_page();
+                        },
+                        "↺ Refresh Page"
+                    }
+                }
                 // ── Version ───────────────────────────────────────────────
                 p {
                     class: "text-xs text-[#666] pt-2",

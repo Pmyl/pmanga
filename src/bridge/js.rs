@@ -140,6 +140,13 @@ pub async fn extract_zip(zip_bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, S
 // Blob helpers (pure web_sys — no JS eval needed)
 // ---------------------------------------------------------------------------
 
+/// Reload the current browser page via `window.location.reload()`.
+pub fn reload_page() {
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().reload();
+    }
+}
+
 /// Convert raw image bytes into a `web_sys::Blob` with the given MIME type.
 pub fn bytes_to_blob(bytes: &[u8], mime: &str) -> Result<web_sys::Blob, String> {
     use js_sys::{Array, Uint8Array};
