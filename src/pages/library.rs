@@ -830,12 +830,13 @@ pub fn LibraryPage(manga_id: String) -> Element {
                             let mid_click = manga_id_for_nav.clone();
                             let nav2 = navigator();
 
-                            // Collect the chapters for this entry so the mark-read
-                            // handler can save progress for each one.
+                            // Collect the chapters for this entry so the mark-read and
+                            // mark-unread handlers can save/delete progress for each one.
                             let mark_read_chapters: Vec<ChapterMeta> = match &item.entry {
                                 LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
                                 LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
                             };
+                            let entry_chapters = mark_read_chapters.clone();
 
                             rsx! {
                                 LibraryEntryCard {
@@ -885,6 +886,22 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                                 if let Err(e) = db.save_progress(&progress).await {
                                                     web_sys::console::error_1(
                                                         &format!("mark_read save_progress error: {e}").into(),
+                                                    );
+                                                }
+                                            }
+                                            *refresh_counter.write() += 1;
+                                        });
+                                    },
+                                    on_mark_unread: move |_| {
+                                        let Some(db) = db_signal.read().clone() else { return };
+                                        let chapters = entry_chapters.clone();
+                                        spawn(async move {
+                                            for chapter in &chapters {
+                                                if let Err(e) =
+                                                    db.delete_progress_for_chapter(&chapter.id).await
+                                                {
+                                                    web_sys::console::error_1(
+                                                        &format!("mark_unread delete_progress error: {e}").into(),
                                                     );
                                                 }
                                             }
