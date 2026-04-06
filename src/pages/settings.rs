@@ -335,6 +335,12 @@ pub fn SettingsPage() -> Element {
                         }
                     }
                 }
+
+                // ── Version ───────────────────────────────────────────────
+                p {
+                    class: "text-xs text-[#444] pt-2",
+                    "Version: {env!(\"APP_VERSION\")}"
+                }
             }
         }
     }
