@@ -3,32 +3,18 @@
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use js_sys::Promise;
-use wasm_bindgen_futures::JsFuture;
 
 use crate::{
-    bridge::weebcentral::{fetch_chapter_list, fetch_chapter_pages, fetch_series_meta},
+    bridge::weebcentral::fetch_chapter_list,
+    bridge::weebcentral::fetch_series_meta,
     storage::{
         db::Db,
-        models::{ChapterId, ChapterMeta, ChapterSource, MangaId, MangaMeta, MangaSource},
+        models::{MangaId, MangaMeta, MangaSource},
         progress::load_proxy_url,
-        tankobon::{fetch_tankobon_csv, lookup_tankobon},
+        sync::{download_chapters_to_db, extract_series_id},
+        tankobon::fetch_tankobon_csv,
     },
 };
-
-// ---------------------------------------------------------------------------
-// sleep_ms — identical pattern to settings.rs, no new dependency needed
-// ---------------------------------------------------------------------------
-
-async fn sleep_ms(ms: i32) {
-    let promise = Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .expect("no window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-            .expect("set_timeout failed");
-    });
-    JsFuture::from(promise).await.unwrap();
-}
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -264,56 +250,24 @@ pub fn WeebCentralImporter(props: WeebCentralImporterProps) -> Element {
 
                 // 4. For each chapter, fetch pages then save ChapterMeta
                 let manga_title = series_meta.title.clone();
-                for (i, chapter) in chapters.iter().enumerate() {
-                    step.set(WcImportStep::Importing {
-                        done: i,
-                        total,
-                        status: format!(
-                            "Fetching pages for chapter {} ({}/{})…",
-                            chapter.number,
-                            i + 1,
-                            total
-                        ),
-                    });
-
-                    let pages = match fetch_chapter_pages(&proxy_url, &chapter.id).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            step.set(WcImportStep::Error {
-                                message: format!(
-                                    "Failed to fetch pages for chapter {}: {e}",
-                                    chapter.number
-                                ),
-                            });
-                            return;
-                        }
-                    };
-
-                    let tankobon_number =
-                        lookup_tankobon(&manga_title, chapter.number, &csv_rows_snapshot);
-
-                    let chapter_meta = ChapterMeta {
-                        id: ChapterId(chapter.id.clone()),
-                        manga_id: manga_id.clone(),
-                        chapter_number: chapter.number,
-                        tankobon_number,
-                        filename: format!("Chapter {}", chapter.number),
-                        page_count: pages.len() as u32,
-                        source: ChapterSource::WeebCentral {
-                            chapter_id: chapter.id.clone(),
-                        },
-                        page_urls: pages.into_iter().map(|p| p.url).collect(),
-                    };
-
-                    if let Err(e) = db.save_chapter(&chapter_meta).await {
-                        step.set(WcImportStep::Error {
-                            message: format!("Failed to save chapter {}: {e}", chapter.number),
-                        });
+                match download_chapters_to_db(
+                    &db,
+                    &proxy_url,
+                    &manga_id,
+                    &manga_title,
+                    &chapters,
+                    &csv_rows_snapshot,
+                    |done, total, status| {
+                        step.set(WcImportStep::Importing { done, total, status });
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        step.set(WcImportStep::Error { message: e });
                         return;
                     }
-
-                    // Stagger requests to avoid rate-limiting
-                    sleep_ms(500).await;
                 }
 
                 step.set(WcImportStep::Done {
@@ -454,23 +408,5 @@ pub fn WeebCentralImporter(props: WeebCentralImporterProps) -> Element {
                 }
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Extract the series_id from a WeebCentral URL.
-///
-/// `https://weebcentral.com/series/01J76XY7E9FNDZ1DBBM6PBJPFK/one-piece`
-/// → `Some("01J76XY7E9FNDZ1DBBM6PBJPFK")`
-fn extract_series_id(url: &str) -> Option<String> {
-    let after = url.split("/series/").nth(1)?;
-    let id = after.split('/').next()?;
-    if id.is_empty() {
-        None
-    } else {
-        Some(id.to_string())
     }
 }

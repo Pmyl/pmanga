@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
-    bridge::weebcentral::{fetch_chapter_list, fetch_chapter_pages},
+    bridge::weebcentral::fetch_chapter_list,
     components::{
         confirm_dialog::ConfirmDialog,
         import_source_dialog::ImportSourceDialog,
@@ -12,31 +12,16 @@ use crate::{
     routes::Route,
     storage::{
         db::Db,
-        models::{ChapterId, ChapterMeta, ChapterSource, LastOpened, MangaId, MangaSource},
+        models::{LastOpened, MangaId, MangaSource},
         progress::{
             clear_last_opened, is_startup_redirect_done, load_last_opened,
             load_proxy_url, mark_startup_redirect_done, save_last_opened,
         },
-        tankobon::{fetch_tankobon_csv, lookup_tankobon},
+        sync::{download_chapters_to_db, extract_series_id, update_latest_downloaded_chapter},
+        tankobon::fetch_tankobon_csv,
     },
 };
 use dioxus::prelude::*;
-use js_sys::Promise;
-use wasm_bindgen_futures::JsFuture;
-
-// ---------------------------------------------------------------------------
-// sleep_ms — same pattern as library.rs
-// ---------------------------------------------------------------------------
-
-async fn sleep_ms(ms: i32) {
-    let promise = Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .expect("no window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-            .expect("set_timeout failed");
-    });
-    JsFuture::from(promise).await.unwrap();
-}
 
 // ---------------------------------------------------------------------------
 // Per-manga display data (assembled asynchronously after DB load)
@@ -348,12 +333,17 @@ pub fn ShelfPage() -> Element {
                                         total: total_mangas,
                                     });
 
-                                    let series_id = series_url
-                                        .split("/series/")
-                                        .nth(1)
-                                        .and_then(|s| s.split('/').next())
-                                        .unwrap_or("")
-                                        .to_string();
+                                    let series_id = match extract_series_id(series_url) {
+                                        Some(id) => id,
+                                        None => {
+                                            sync_all_status.set(SyncAllStatus::Error {
+                                                message: format!(
+                                                    "Could not extract series ID from URL for \"{title}\"."
+                                                ),
+                                            });
+                                            return;
+                                        }
+                                    };
 
                                     let mut remote_chapters =
                                         match fetch_chapter_list(&proxy_url, &series_id).await {
@@ -416,90 +406,40 @@ pub fn ShelfPage() -> Element {
 
                                     let total_new = new_chapters.len();
 
-                                    for (ch_idx, chapter) in new_chapters.iter().enumerate() {
-                                        sync_all_status.set(SyncAllStatus::Syncing {
-                                            status: format!(
-                                                "\"{title}\" — ch. {} ({}/{})",
-                                                chapter.number,
-                                                ch_idx + 1,
-                                                total_new
-                                            ),
-                                            current: idx + 1,
-                                            total: total_mangas,
-                                        });
-
-                                        let pages =
-                                            match fetch_chapter_pages(&proxy_url, &chapter.id)
-                                                .await
-                                            {
-                                                Ok(p) => p,
-                                                Err(e) => {
-                                                    sync_all_status.set(SyncAllStatus::Error {
-                                                        message: format!(
-                                                            "Failed to fetch pages for ch. {} of \"{title}\": {e}",
-                                                            chapter.number
-                                                        ),
-                                                    });
-                                                    return;
-                                                }
-                                            };
-
-                                        let tankobon_number = lookup_tankobon(
-                                            title,
-                                            chapter.number,
-                                            &csv_rows_snapshot,
-                                        );
-
-                                        let chapter_meta = ChapterMeta {
-                                            id: ChapterId(chapter.id.clone()),
-                                            manga_id: MangaId(manga_id.clone()),
-                                            chapter_number: chapter.number,
-                                            tankobon_number,
-                                            filename: format!("Chapter {}", chapter.number),
-                                            page_count: pages.len() as u32,
-                                            source: ChapterSource::WeebCentral {
-                                                chapter_id: chapter.id.clone(),
-                                            },
-                                            page_urls: pages
-                                                .into_iter()
-                                                .map(|p| p.url)
-                                                .collect(),
-                                        };
-
-                                        if let Err(e) = db.save_chapter(&chapter_meta).await {
+                                    match download_chapters_to_db(
+                                        &db,
+                                        &proxy_url,
+                                        &MangaId(manga_id.clone()),
+                                        title,
+                                        &new_chapters,
+                                        &csv_rows_snapshot,
+                                        |_saved, _total, status| {
+                                            // Prefix the per-chapter status with the manga title
+                                            // so the user knows which series is being processed.
+                                            sync_all_status.set(SyncAllStatus::Syncing {
+                                                status: format!("\"{title}\" — {status}"),
+                                                current: idx + 1,
+                                                total: total_mangas,
+                                            });
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        Ok(_) => {}
+                                        Err(e) => {
                                             sync_all_status.set(SyncAllStatus::Error {
-                                                message: format!(
-                                                    "Failed to save ch. {} of \"{title}\": {e}",
-                                                    chapter.number
-                                                ),
+                                                message: e,
                                             });
                                             return;
                                         }
-
-                                        sleep_ms(500).await;
                                     }
 
-                                    // Update latest_downloaded_chapter in MangaMeta.
-                                    let max_synced = new_chapters
-                                        .iter()
-                                        .map(|c| c.number)
-                                        .fold(f32::NEG_INFINITY, f32::max);
-                                    if max_synced.is_finite() {
-                                        if let Ok(Some(mut meta)) =
-                                            db.load_manga(&MangaId(manga_id.clone())).await
-                                        {
-                                            let current_latest = meta
-                                                .latest_downloaded_chapter
-                                                .unwrap_or(f32::NEG_INFINITY);
-                                            meta.latest_downloaded_chapter =
-                                                Some(max_synced.max(current_latest));
-                                            if let Err(e) = db.save_manga(&meta).await {
-                                                web_sys::console::error_1(
-                                                    &format!("save_manga error: {e}").into(),
-                                                );
-                                            }
-                                        }
-                                    }
+                                    update_latest_downloaded_chapter(
+                                        &db,
+                                        &MangaId(manga_id.clone()),
+                                        &new_chapters,
+                                    )
+                                    .await;
 
                                     grand_total_new += total_new;
                                 }

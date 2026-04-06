@@ -4,36 +4,21 @@ use crate::storage::progress::{
     clear_last_opened, load_last_opened, load_proxy_url, save_last_opened,
 };
 use dioxus::prelude::*;
-use js_sys::Promise;
-use wasm_bindgen_futures::JsFuture;
 
 use crate::{
-    bridge::weebcentral::{fetch_chapter_list, fetch_chapter_pages},
+    bridge::weebcentral::fetch_chapter_list,
     components::{confirm_dialog::ConfirmDialog, importer::Importer, manga_card::LibraryEntryCard},
     routes::Route,
     storage::tankobon::{fetch_tankobon_csv, lookup_tankobon},
     storage::{
         db::Db,
         models::{
-            ChapterId, ChapterMeta, ChapterSource, LastOpened, LibraryEntry, MangaId, MangaMeta,
+            ChapterId, ChapterMeta, LastOpened, LibraryEntry, MangaId, MangaMeta,
             MangaSource, ReadingProgress, build_library_entries,
         },
+        sync::{download_chapters_to_db, extract_series_id, update_latest_downloaded_chapter},
     },
 };
-
-// ---------------------------------------------------------------------------
-// sleep_ms — same pattern as settings.rs
-// ---------------------------------------------------------------------------
-
-async fn sleep_ms(ms: i32) {
-    let promise = Promise::new(&mut |resolve, _reject| {
-        web_sys::window()
-            .expect("no window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-            .expect("set_timeout failed");
-    });
-    JsFuture::from(promise).await.unwrap();
-}
 
 // ---------------------------------------------------------------------------
 // update_manga_after_chapter_delete — helper for delete handlers
@@ -576,12 +561,15 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                             }
                                         };
 
-                                        let series_id = series_url
-                                            .split("/series/")
-                                            .nth(1)
-                                            .and_then(|s| s.split('/').next())
-                                            .unwrap_or("")
-                                            .to_string();
+                                        let series_id = match extract_series_id(&series_url) {
+                                            Some(id) => id,
+                                            None => {
+                                                sync_status.set(SyncStatus::Error {
+                                                    message: "Could not extract series ID from URL.".to_string(),
+                                                });
+                                                return;
+                                            }
+                                        };
 
                                         // Parse range inputs.
                                         let from_raw = sync_from.read().trim().to_string();
@@ -725,93 +713,38 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                             }
 
                                             let total_new = new_chapters.len();
-                                            let mut saved = 0usize;
 
-                                            for chapter in &new_chapters {
-                                                sync_status.set(SyncStatus::Syncing {
-                                                    status: format!(
-                                                        "Fetching pages for chapter {} ({}/{})…",
-                                                        chapter.number,
-                                                        saved + 1,
-                                                        total_new
-                                                    ),
-                                                });
-
-                                                let pages =
-                                                    match fetch_chapter_pages(&proxy_url, &chapter.id)
-                                                        .await
-                                                    {
-                                                        Ok(p) => p,
-                                                        Err(e) => {
-                                                            sync_status.set(SyncStatus::Error {
-                                                                message: format!(
-                                                                    "Failed to fetch pages for chapter {}: {e}",
-                                                                    chapter.number
-                                                                ),
-                                                            });
-                                                            return;
-                                                        }
-                                                    };
-
-                                                let tankobon_number = lookup_tankobon(
-                                                    &manga_title,
-                                                    chapter.number,
-                                                    &csv_rows_snapshot,
-                                                );
-
-                                                let chapter_meta = ChapterMeta {
-                                                    id: ChapterId(chapter.id.clone()),
-                                                    manga_id: MangaId(manga_id_sync.clone()),
-                                                    chapter_number: chapter.number,
-                                                    tankobon_number,
-                                                    filename: format!("Chapter {}", chapter.number),
-                                                    page_count: pages.len() as u32,
-                                                    source: ChapterSource::WeebCentral {
-                                                        chapter_id: chapter.id.clone(),
-                                                    },
-                                                    page_urls: pages.into_iter().map(|p| p.url).collect(),
-                                                };
-
-                                                if let Err(e) = db.save_chapter(&chapter_meta).await {
-                                                    sync_status.set(SyncStatus::Error {
-                                                        message: format!(
-                                                            "Failed to save chapter {}: {e}",
-                                                            chapter.number
-                                                        ),
-                                                    });
+                                            match download_chapters_to_db(
+                                                &db,
+                                                &proxy_url,
+                                                &MangaId(manga_id_sync.clone()),
+                                                &manga_title,
+                                                &new_chapters,
+                                                &csv_rows_snapshot,
+                                                |_saved, _total, status| {
+                                                    sync_status.set(SyncStatus::Syncing { status });
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    sync_status.set(SyncStatus::Error { message: e });
                                                     return;
                                                 }
-
-                                                saved += 1;
-                                                sleep_ms(500).await;
                                             }
 
-                                            // Update latest_downloaded_chapter in MangaMeta.
-                                            let max_synced = new_chapters
-                                                .iter()
-                                                .map(|c| c.number)
-                                                .fold(f32::NEG_INFINITY, f32::max);
-                                            if max_synced.is_finite() {
-                                                // Clone out of the signal first so we don't
-                                                // hold the read borrow when we write back.
-                                                let maybe_meta: Option<MangaMeta> =
-                                                    manga_meta_signal.read().clone();
-                                                if let Some(mut meta) = maybe_meta {
-                                                    let current_latest = meta
-                                                        .latest_downloaded_chapter
-                                                        .unwrap_or(f32::NEG_INFINITY);
-                                                    let new_latest =
-                                                        max_synced.max(current_latest);
-                                                    meta.latest_downloaded_chapter =
-                                                        Some(new_latest);
-                                                    if let Err(e) = db.save_manga(&meta).await {
-                                                        web_sys::console::error_1(
-                                                            &format!("save_manga error: {e}")
-                                                                .into(),
-                                                        );
-                                                    }
-                                                    *manga_meta_signal.write() = Some(meta);
-                                                }
+                                            // Update latest_downloaded_chapter in MangaMeta
+                                            // and keep the in-memory signal in sync.
+                                            if let Some(updated_meta) =
+                                                update_latest_downloaded_chapter(
+                                                    &db,
+                                                    &MangaId(manga_id_sync.clone()),
+                                                    &new_chapters,
+                                                )
+                                                .await
+                                            {
+                                                *manga_meta_signal.write() = Some(updated_meta);
                                             }
 
                                             sync_status.set(SyncStatus::Done {
