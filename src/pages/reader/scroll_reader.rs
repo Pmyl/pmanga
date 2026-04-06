@@ -518,14 +518,16 @@ pub fn ScrollReaderView(
             let count = urls.len();
             drop(urls); // release borrow before spawn captures signals
 
-            // Establish a reactive dependency on images_loaded_count so that
-            // this effect re-runs each time a page image finishes loading.
-            // The dependency is only registered while the initial scroll is
-            // still pending; once scrolled is true the read is skipped,
-            // preventing unnecessary re-runs after the scroll is committed.
-            if !scrolled() {
-                let _ = images_loaded_count();
-            }
+            // Always maintain a reactive dependency on images_loaded_count so
+            // that this effect re-runs each time a page image finishes loading.
+            // This keeps page_tops_signal accurate throughout the lifetime of
+            // the chapter — both for the initial scroll-to-page (which needs
+            // correct tops before the target page's images have loaded) and for
+            // the scroll handler (which uses page_tops_signal to track the
+            // current visible page while the user scrolls).  Without this
+            // dependency the tops would be frozen at the first-render values
+            // where every not-yet-loaded image has zero height.
+            let _ = images_loaded_count();
 
             // Use spawn so elements are in the DOM when we query offsetTop.
             spawn(async move {
