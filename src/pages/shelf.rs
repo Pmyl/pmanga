@@ -309,7 +309,10 @@ pub fn ShelfPage() -> Element {
                                     .collect();
 
                             if caught_up.is_empty() {
-                                sync_all_status.set(SyncAllStatus::Done { total_new: 0 });
+                                sync_all_status.set(SyncAllStatus::Error {
+                                    message: "No caught-up WeebCentral series are eligible to sync."
+                                        .to_string(),
+                                });
                                 return;
                             }
 
