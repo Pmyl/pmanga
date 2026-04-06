@@ -127,6 +127,8 @@ pub fn ScrollReaderView(
     chapter_id: String,
     page: usize,
     reader_config: Signal<ReaderConfig>,
+    overlay_visible: Signal<bool>,
+    settings_modal_open: Signal<bool>,
 ) -> Element {
     // ----- Alive guard -----
     let component_alive = Rc::new(Cell::new(true));
@@ -136,8 +138,8 @@ pub fn ScrollReaderView(
     }
 
     // ----- Signals -----
-    let mut overlay_visible = use_signal(|| false);
-    let mut settings_modal_open = use_signal(|| false);
+    let mut overlay_visible = overlay_visible;
+    let mut settings_modal_open = settings_modal_open;
 
     let mut page_signal = use_signal(|| page);
     let mut chapter_id_signal = use_signal(|| chapter_id.clone());

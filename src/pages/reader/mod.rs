@@ -30,9 +30,15 @@ use scroll_reader::ScrollReaderView;
 /// Top-level reader component.  Reads the persisted [`ReaderConfig`] and
 /// renders the appropriate reading mode, passing the mutable config signal
 /// down so either child can toggle modes from within the options modal.
+///
+/// `overlay_visible` and `settings_modal_open` are lifted here so that
+/// toggling the reading mode (which swaps the child component) does not
+/// dismiss the top bar or the reader-settings dialog.
 #[component]
 pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element {
     let reader_config: Signal<ReaderConfig> = use_signal(|| ReaderConfig::load());
+    let overlay_visible: Signal<bool> = use_signal(|| false);
+    let settings_modal_open: Signal<bool> = use_signal(|| false);
 
     if reader_config.read().vertical_scroll {
         rsx! {
@@ -41,6 +47,8 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 chapter_id: chapter_id.clone(),
                 page,
                 reader_config,
+                overlay_visible,
+                settings_modal_open,
             }
         }
     } else {
@@ -50,6 +58,8 @@ pub fn ReaderPage(manga_id: String, chapter_id: String, page: usize) -> Element 
                 chapter_id: chapter_id.clone(),
                 page,
                 reader_config,
+                overlay_visible,
+                settings_modal_open,
             }
         }
     }
