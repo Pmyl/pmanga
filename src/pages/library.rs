@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
-use crate::storage::progress::{clear_last_opened, load_last_opened, load_proxy_url};
+use crate::storage::progress::{
+    clear_last_opened, load_last_opened, load_proxy_url, save_last_opened,
+};
 use dioxus::prelude::*;
 use js_sys::Promise;
 use wasm_bindgen_futures::JsFuture;
@@ -13,8 +15,8 @@ use crate::{
     storage::{
         db::Db,
         models::{
-            ChapterId, ChapterMeta, ChapterSource, LibraryEntry, MangaId, MangaMeta, MangaSource,
-            ReadingProgress, build_library_entries,
+            ChapterId, ChapterMeta, ChapterSource, LastOpened, LibraryEntry, MangaId, MangaMeta,
+            MangaSource, ReadingProgress, build_library_entries,
         },
     },
 };
@@ -132,6 +134,14 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     web_sys::console::error_1(&format!("DB open error: {e}").into());
                 }
             }
+        });
+    });
+
+    // Save the last-opened state whenever this library page is visited.
+    let manga_id_for_state = manga_id.clone();
+    use_effect(move || {
+        save_last_opened(&LastOpened::Library {
+            manga_id: manga_id_for_state.clone(),
         });
     });
 
@@ -296,8 +306,8 @@ pub fn LibraryPage(manga_id: String) -> Element {
             }
 
             // Clear last_opened if it points to a deleted chapter.
-            if let Some(last) = load_last_opened() {
-                if chapter_ids.iter().any(|cid| cid.0 == last.chapter_id) {
+            if let Some(LastOpened::Reader { chapter_id, .. }) = load_last_opened() {
+                if chapter_ids.iter().any(|cid| cid.0 == chapter_id) {
                     clear_last_opened();
                 }
             }
@@ -381,8 +391,8 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     LibraryEntry::LoneChapter(ch) => vec![ch.id.0.clone()],
                 })
                 .collect();
-            if let Some(last) = load_last_opened() {
-                if all_deleted_chapter_ids.contains(&last.chapter_id) {
+            if let Some(LastOpened::Reader { chapter_id, .. }) = load_last_opened() {
+                if all_deleted_chapter_ids.contains(&chapter_id) {
                     clear_last_opened();
                 }
             }

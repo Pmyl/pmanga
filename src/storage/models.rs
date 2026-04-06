@@ -72,13 +72,13 @@ pub struct ReadingProgress {
     pub page: usize,
 }
 
-/// Stored in `localStorage` so the app can restore the last reading position
+/// Stored in `localStorage` so the app can restore the last session state
 /// across page reloads without hitting IndexedDB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LastOpened {
-    pub manga_id: String,
-    pub chapter_id: String,
-    pub page: usize,
+pub enum LastOpened {
+    Shelf,
+    Library { manga_id: String },
+    Reader { manga_id: String, chapter_id: String, page: usize },
 }
 
 /// Build the interleaved list of [`LibraryEntry`] values from a flat list of

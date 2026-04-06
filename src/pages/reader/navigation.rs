@@ -120,7 +120,7 @@ pub fn save_progress_fire_and_forget(
     page: usize,
 ) {
     // localStorage — synchronous, do it immediately.
-    save_last_opened(&LastOpened {
+    save_last_opened(&LastOpened::Reader {
         manga_id: manga_id.clone(),
         chapter_id: chapter_id.clone(),
         page,
