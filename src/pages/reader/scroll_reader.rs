@@ -584,8 +584,18 @@ pub fn ScrollReaderView(
             // `onload`, so mark them as loaded immediately.
             // Use `peek()` for the length check to avoid subscribing here — the
             // reactive subscription is established by the `.read()` call below.
+            //
+            // Preserve any `true` flags that may already be set: for cached images
+            // the browser can fire `onload` during DOM insertion, *before* this
+            // effect runs.  The `onload` handler grows the vec to accommodate early
+            // events, so we must not reset those flags back to `false` here.
             if pages_loaded_signal.peek().len() != count {
-                *pages_loaded_signal.write() = urls.iter().map(|u| u.is_none()).collect();
+                let existing: Vec<bool> = pages_loaded_signal.peek().clone();
+                *pages_loaded_signal.write() = urls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, u)| u.is_none() || existing.get(i).copied().unwrap_or(false))
+                    .collect();
             }
 
             drop(urls); // release borrow before taking the loaded snapshot
@@ -727,9 +737,11 @@ pub fn ScrollReaderView(
                                                 src: "{src}",
                                                 alt: "Manga page {i}",
                                                 onload: move |_| {
-                                                    if let Some(slot) = pages_loaded_signal.write().get_mut(i) {
-                                                        *slot = true;
+                                                    let mut loaded = pages_loaded_signal.write();
+                                                    if loaded.len() <= i {
+                                                        loaded.resize(i + 1, false);
                                                     }
+                                                    loaded[i] = true;
                                                 },
                                             }
                                         } else {
@@ -743,9 +755,11 @@ pub fn ScrollReaderView(
                                                     src: "{src}",
                                                     alt: "Manga page {i}",
                                                     onload: move |_| {
-                                                        if let Some(slot) = pages_loaded_signal.write().get_mut(i) {
-                                                            *slot = true;
+                                                        let mut loaded = pages_loaded_signal.write();
+                                                        if loaded.len() <= i {
+                                                            loaded.resize(i + 1, false);
                                                         }
+                                                        loaded[i] = true;
                                                     },
                                                 }
                                             }
