@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::navigation::go_to_page;
+use super::navigation::{go_to_page, save_progress_fire_and_forget};
 use super::options_modal::ReaderOptionsModal;
 use super::overlay::ReaderOverlay;
 use super::reader_config::ReaderConfig;
@@ -428,6 +428,24 @@ pub fn PagedReaderView(
                     }
                 }
             }
+        });
+    }
+
+    // ----- Save progress on initial entry -----
+    // Captures props by value so the effect has no reactive dependencies and
+    // runs exactly once at mount.  Subsequent page/chapter changes are already
+    // saved inside `go_to_page`.  localStorage (used for startup redirect) does
+    // not require an open DB, so None is sufficient here.
+    {
+        let manga_id_for_mount = manga_id.clone();
+        let chapter_id_for_mount = chapter_id.clone();
+        use_effect(move || {
+            save_progress_fire_and_forget(
+                None,
+                manga_id_for_mount.clone(),
+                chapter_id_for_mount.clone(),
+                page,
+            );
         });
     }
 
