@@ -7,8 +7,11 @@ use crate::{
     routes::Route,
     storage::{
         db::Db,
-        models::{MangaId, MangaSource},
-        progress::{is_startup_redirect_done, load_last_opened, mark_startup_redirect_done},
+        models::{LastOpened, MangaId, MangaSource},
+        progress::{
+            is_startup_redirect_done, load_last_opened, mark_startup_redirect_done,
+            save_last_opened,
+        },
     },
 };
 use dioxus::prelude::*;
@@ -60,21 +63,27 @@ pub fn ShelfPage() -> Element {
         });
     });
 
-    // Startup redirect: if there is a last-opened position in localStorage,
-    // navigate straight to the reader on first mount — but only once per
+    // Startup redirect: if there is a saved session state in localStorage,
+    // navigate to the correct page on first mount — but only once per
     // browser session so that navigating *back* to the shelf does not
     // re-trigger the redirect.
     use_effect(move || {
         if !is_startup_redirect_done() {
             mark_startup_redirect_done();
-            if let Some(last) = load_last_opened() {
-                let nav = navigator();
-                nav.push(Route::Reader {
-                    manga_id: last.manga_id,
-                    chapter_id: last.chapter_id,
-                    page: last.page,
-                });
+            let nav = navigator();
+            match load_last_opened() {
+                Some(LastOpened::Reader { manga_id, chapter_id, page }) => {
+                    nav.push(Route::Reader { manga_id, chapter_id, page });
+                }
+                Some(LastOpened::Library { manga_id }) => {
+                    nav.push(Route::Library { manga_id });
+                }
+                Some(LastOpened::Shelf) | None => {
+                    // Stay on the shelf.
+                }
             }
+        } else {
+            save_last_opened(&LastOpened::Shelf);
         }
     });
 
