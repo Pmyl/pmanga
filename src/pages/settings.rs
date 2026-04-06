@@ -153,7 +153,7 @@ pub fn SettingsPage() -> Element {
 
                 // ── Binding table ─────────────────────────────────────────
                 div {
-                    class: "flex flex-col gap-px bg-[#222] rounded-lg overflow-hidden",
+                    class: "flex flex-col gap-px bg-[#222] rounded-lg overflow-hidden shrink-0",
 
                     for (action, button) in rows {
                         {
