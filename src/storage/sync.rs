@@ -56,6 +56,57 @@ pub fn extract_series_id(url: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{extract_series_id, next_chapter_after};
+
+    fn assert_f32_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < f32::EPSILON,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn extract_series_id_from_standard_url() {
+        assert_eq!(
+            extract_series_id("https://weebcentral.com/series/01J76XY7E9FNDZ1DBBM6PBJPFK/one-piece"),
+            Some("01J76XY7E9FNDZ1DBBM6PBJPFK".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_series_id_with_trailing_slash() {
+        assert_eq!(
+            extract_series_id("https://weebcentral.com/series/01J76XY7E9FNDZ1DBBM6PBJPFK/"),
+            Some("01J76XY7E9FNDZ1DBBM6PBJPFK".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_series_id_with_query_string() {
+        assert_eq!(
+            extract_series_id("https://weebcentral.com/series/01J76XY7E9FNDZ1DBBM6PBJPFK?utm_source=test"),
+            Some("01J76XY7E9FNDZ1DBBM6PBJPFK?utm_source=test".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_series_id_missing_or_empty_segment() {
+        assert_eq!(extract_series_id("https://weebcentral.com/title/abc"), None);
+        assert_eq!(extract_series_id("https://weebcentral.com/series/"), None);
+    }
+
+    #[test]
+    fn next_chapter_after_advances_integer_boundary() {
+        assert_f32_eq(next_chapter_after(10.0), 10.1);
+    }
+
+    #[test]
+    fn next_chapter_after_advances_fractional_boundary() {
+        assert_f32_eq(next_chapter_after(10.5), 10.6);
+    }
+}
 // ---------------------------------------------------------------------------
 // Core sync
 // ---------------------------------------------------------------------------
