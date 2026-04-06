@@ -637,11 +637,17 @@ pub fn ScrollReaderView(
                     if current_target == 0 {
                         // Page 0 is already at the top; no scroll needed.
                         scrolled.set(true);
-                    } else if let Some(container) = container_signal.read().as_ref() {
-                        container.set_scroll_top(initial_top);
-                        // Mark done AFTER a successful scroll so that a transient
-                        // missing container lets the effect retry on the next render.
-                        scrolled.set(true);
+                    } else if initial_top > 0 {
+                        // Guard against compute_page_tops returning 0 for a non-zero
+                        // target (e.g., because the DOM element wasn't found yet).
+                        // Without this guard, scrolling to 0 and setting scrolled=true
+                        // would lock the reader at the top with no chance to retry.
+                        if let Some(container) = container_signal.read().as_ref() {
+                            container.set_scroll_top(initial_top);
+                            // Mark done AFTER a successful scroll so that a transient
+                            // missing container lets the effect retry on the next render.
+                            scrolled.set(true);
+                        }
                     }
                 }
             });
