@@ -118,6 +118,47 @@ fn compute_page_tops(page_count: usize) -> Vec<i32> {
 }
 
 // ---------------------------------------------------------------------------
+// Pure-logic helpers (extracted for unit-testability)
+// ---------------------------------------------------------------------------
+
+/// Given the pre-computed `offsetTop` of every page and the current scroll
+/// state, return the index of the visible page.
+///
+/// "Visible page" is defined as the last page whose top edge is at or above
+/// the midpoint of the viewport (`scroll_top + client_height / 2`).
+///
+/// # Returns
+/// Returns `0` when `tops` is empty.
+pub(crate) fn visible_page_from_scroll(tops: &[i32], scroll_top: i32, client_height: i32) -> usize {
+    if tops.is_empty() {
+        return 0;
+    }
+    let midpoint = scroll_top + client_height / 2;
+    tops.partition_point(|&t| t <= midpoint)
+        .saturating_sub(1)
+        .min(tops.len() - 1)
+}
+
+/// Returns `true` when every page *above* `target_page` has finished loading
+/// (i.e. its image has fired `onload`, or it is a placeholder with no image).
+///
+/// This is the gate that prevents scrolling to `target_page` before all the
+/// images above it have been laid out, which would give an inaccurate
+/// `offsetTop` and land the reader a few pages short of the real target.
+///
+/// - `target_page == 0` → always `true` (nothing above page 0).
+/// - `loaded.len() < target_page` → `false` (load-flags not yet initialised).
+pub(crate) fn all_images_above_loaded(loaded: &[bool], target_page: usize) -> bool {
+    if target_page == 0 {
+        return true;
+    }
+    if loaded.len() < target_page {
+        return false;
+    }
+    loaded[..target_page].iter().all(|&b| b)
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -199,6 +240,34 @@ pub fn ScrollReaderView(
     // page in O(log N) with zero allocations and zero DOM queries.
     let mut page_tops_signal: Signal<Vec<i32>> = use_signal(Vec::new);
 
+    // Per-page image-load tracking used by the initial-scroll effect.
+    // `pages_loaded_signal[i]` is `true` once page `i`'s `<img>` has fired its
+    // `onload` event, or immediately for placeholder pages (url = None) which
+    // have a fixed CSS height and never fire `onload`.
+    // The effect waits until every page *above* the target page is loaded so
+    // that their heights are stable and the target's `offsetTop` is accurate.
+    // This prevents the "few pages back" race condition where the scroll fires
+    // before images above have loaded and later pushes the target page down.
+    let mut pages_loaded_signal: Signal<Vec<bool>> = use_signal(Vec::new);
+
+    // Guard that prevents re-scrolling once the initial scroll-to-page has
+    // happened.  Lifted out of the setup block so it can be reset from the
+    // `page`-prop change detector below (needed when navigator().replace()
+    // updates the target page after the component is already mounted).
+    let mut scrolled: Signal<bool> = use_signal(|| false);
+
+    // Reset the scroll guard whenever the `page` prop changes (e.g., after
+    // the sync-progress resource calls navigator().replace() to correct a
+    // stale URL page).  Without this reset, `scrolled` stays `true` from the
+    // old target and the component never scrolls to the new page.
+    {
+        let mut prev_page_for_scroll = use_signal(|| page);
+        if *prev_page_for_scroll.peek() != page {
+            scrolled.set(false);
+            prev_page_for_scroll.set(page);
+        }
+    }
+
     // ----- Save progress when visible page changes -----
     {
         let manga_id_for_progress = manga_id.clone();
@@ -246,11 +315,7 @@ pub fn ScrollReaderView(
             // Binary search on the cached tops Vec — no DOM queries, no allocs.
             let tops = page_tops_signal.read();
             if !tops.is_empty() {
-                let midpoint = scroll_top + client_height / 2;
-                let new_visible = tops
-                    .partition_point(|&t| t <= midpoint)
-                    .saturating_sub(1)
-                    .min(tops.len() - 1);
+                let new_visible = visible_page_from_scroll(&tops, scroll_top, client_height);
                 if *current_visible_page.peek() != new_visible {
                     current_visible_page.set(new_visible);
                 }
@@ -472,20 +537,16 @@ pub fn ScrollReaderView(
     // `container_signal` so the hot-path scroll handler never has to call
     // window → document → getElementById again.
     //
-    // `images_loaded_count` tracks how many page images have fired their `onload`
-    // event.  The effect subscribes to it (while the initial scroll is still
-    // pending) so that it retries computing page tops each time another image
-    // becomes available.  This is necessary because `img` elements have zero
-    // height until their image data is downloaded; on a hard refresh the first
-    // call to `compute_page_tops` therefore returns all-zero values, and
-    // without the retry the scroll to the target page never happens.
-    let mut images_loaded_count: Signal<usize> = use_signal(|| 0);
+    // `pages_loaded_signal` tracks which page images have fired their `onload`
+    // event.  The effect subscribes to it so that it re-runs each time a page
+    // image finishes loading.  Crucially, the scroll to the target page is
+    // deferred until ALL images *above* the target have loaded.  Firing the
+    // scroll too early (e.g., when only the first image above has loaded) gives
+    // an inaccurate offsetTop and lands the user a few pages short of the real
+    // target — the "few pages back" race condition.
     {
-        let initial_page = page;
-        let mut scrolled = use_signal(|| false);
-
-        // Reset both the scroll guard and the cached tops when the chapter changes
-        // so the effect re-runs and recomputes everything for the new chapter.
+        // Reset the scroll guard, cached tops, page-load flags, and URL list
+        // when the chapter changes so the effect re-runs for the new chapter.
         //
         // page_urls_signal is also cleared so the effect's early-return guard
         // (`if urls.is_empty() { return; }`) fires until the new chapter's pages
@@ -500,7 +561,7 @@ pub fn ScrollReaderView(
             let mut prev_chapter = use_signal(|| chapter_id.clone());
             if *prev_chapter.peek() != chapter_id {
                 scrolled.set(false);
-                images_loaded_count.set(0);
+                *pages_loaded_signal.write() = Vec::new();
                 *page_tops_signal.write() = Vec::new();
                 *page_urls_signal.write() = Vec::new();
                 if let Some(container) = get_scroll_container() {
@@ -516,18 +577,35 @@ pub fn ScrollReaderView(
                 return;
             }
             let count = urls.len();
-            drop(urls); // release borrow before spawn captures signals
 
-            // Always maintain a reactive dependency on images_loaded_count so
-            // that this effect re-runs each time a page image finishes loading.
-            // This keeps page_tops_signal accurate throughout the lifetime of
-            // the chapter — both for the initial scroll-to-page (which needs
-            // correct tops before the target page's images have loaded) and for
-            // the scroll handler (which uses page_tops_signal to track the
-            // current visible page while the user scrolls).  Without this
-            // dependency the tops would be frozen at the first-render values
-            // where every not-yet-loaded image has zero height.
-            let _ = images_loaded_count();
+            // Initialise the per-page load-flag vector the first time URLs are
+            // available, and whenever the page count changes (e.g., chapter switch).
+            // Placeholder pages (url = None) have a fixed CSS height and never fire
+            // `onload`, so mark them as loaded immediately.
+            // Use `peek()` for the length check to avoid subscribing here — the
+            // reactive subscription is established by the `.read()` call below.
+            //
+            // Preserve any `true` flags that may already be set: for cached images
+            // the browser can fire `onload` during DOM insertion, *before* this
+            // effect runs.  The `onload` handler grows the vec to accommodate early
+            // events, so we must not reset those flags back to `false` here.
+            if pages_loaded_signal.peek().len() != count {
+                let existing: Vec<bool> = pages_loaded_signal.peek().clone();
+                *pages_loaded_signal.write() = urls
+                    .iter()
+                    .enumerate()
+                    .map(|(i, u)| u.is_none() || existing.get(i).copied().unwrap_or(false))
+                    .collect();
+            }
+
+            drop(urls); // release borrow before taking the loaded snapshot
+
+            // Subscribe to per-page load updates so this effect re-runs when any
+            // image fires its `onload` event (updating pages_loaded_signal).
+            // Also subscribe to page_signal so the effect re-runs when
+            // navigator().replace() changes the target page.
+            let loaded_vec = pages_loaded_signal.read().clone();
+            let current_target = page_signal();
 
             // Use spawn so elements are in the DOM when we query offsetTop.
             spawn(async move {
@@ -538,20 +616,38 @@ pub fn ScrollReaderView(
 
                 // Step 2: compute and cache page tops.
                 let tops = compute_page_tops(count);
-                // Snapshot the initial page's top before the write borrow.
-                let initial_top = tops.get(initial_page).copied().unwrap_or(0);
+                let initial_top = tops.get(current_target).copied().unwrap_or(0);
                 *page_tops_signal.write() = tops;
 
-                // Step 3: scroll to the starting page (only once per chapter).
-                // Only lock the scroll guard once we have a valid target:
-                // - page 0 always has top == 0, so no scroll is needed there.
-                // - for any other page, wait until initial_top > 0, which means
-                //   at least the images above it have loaded and contributed
-                //   their height to the layout.
-                if !scrolled() && (initial_page == 0 || initial_top > 0) {
-                    scrolled.set(true);
-                    if let Some(container) = container_signal.read().as_ref() {
-                        container.set_scroll_top(initial_top);
+                // Step 3: scroll to the starting page (only once per chapter, or
+                // after the target page changes due to navigator().replace()).
+                //
+                // Wait until ALL images above `current_target` have loaded so
+                // that their heights are stable and `initial_top` is accurate.
+                // This prevents the "few pages back" bug where a premature scroll
+                // fires when only one image above target has loaded (giving a tiny
+                // offset), and subsequent image loads push the target further down.
+                //
+                // `pages_loaded_signal[i]` for pages with url=None is pre-set to
+                // `true` (placeholder divs have fixed height; see initialisation
+                // above), so missing images do not block the scroll indefinitely.
+                let all_above_loaded = all_images_above_loaded(&loaded_vec, current_target);
+
+                if !scrolled() && all_above_loaded {
+                    if current_target == 0 {
+                        // Page 0 is already at the top; no scroll needed.
+                        scrolled.set(true);
+                    } else if initial_top > 0 {
+                        // Guard against compute_page_tops returning 0 for a non-zero
+                        // target (e.g., because the DOM element wasn't found yet).
+                        // Without this guard, scrolling to 0 and setting scrolled=true
+                        // would lock the reader at the top with no chance to retry.
+                        if let Some(container) = container_signal.read().as_ref() {
+                            container.set_scroll_top(initial_top);
+                            // Mark done AFTER a successful scroll so that a transient
+                            // missing container lets the effect retry on the next render.
+                            scrolled.set(true);
+                        }
                     }
                 }
             });
@@ -647,7 +743,11 @@ pub fn ScrollReaderView(
                                                 src: "{src}",
                                                 alt: "Manga page {i}",
                                                 onload: move |_| {
-                                                    *images_loaded_count.write() += 1;
+                                                    let mut loaded = pages_loaded_signal.write();
+                                                    if loaded.len() <= i {
+                                                        loaded.resize(i + 1, false);
+                                                    }
+                                                    loaded[i] = true;
                                                 },
                                             }
                                         } else {
@@ -661,7 +761,11 @@ pub fn ScrollReaderView(
                                                     src: "{src}",
                                                     alt: "Manga page {i}",
                                                     onload: move |_| {
-                                                        *images_loaded_count.write() += 1;
+                                                        let mut loaded = pages_loaded_signal.write();
+                                                        if loaded.len() <= i {
+                                                            loaded.resize(i + 1, false);
+                                                        }
+                                                        loaded[i] = true;
                                                     },
                                                 }
                                             }
@@ -701,5 +805,106 @@ pub fn ScrollReaderView(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{all_images_above_loaded, visible_page_from_scroll};
+
+    // ----- visible_page_from_scroll -----
+
+    #[test]
+    fn visible_page_returns_zero_for_empty_tops() {
+        assert_eq!(visible_page_from_scroll(&[], 0, 800), 0);
+    }
+
+    #[test]
+    fn visible_page_returns_zero_at_top() {
+        // 3 pages, each 1000 px tall.  Scrolled to very top.
+        let tops = vec![0, 1000, 2000];
+        assert_eq!(visible_page_from_scroll(&tops, 0, 800), 0);
+    }
+
+    #[test]
+    fn visible_page_advances_when_midpoint_crosses_page_boundary() {
+        // Viewport height 800.  Midpoint = scroll_top + 400.
+        // Page 1 starts at 1000.  Midpoint must be >= 1000 for page 1 to show.
+        // scroll_top = 600 → midpoint 1000 → exactly at page 1 boundary → page 1.
+        let tops = vec![0, 1000, 2000];
+        assert_eq!(visible_page_from_scroll(&tops, 600, 800), 1);
+    }
+
+    #[test]
+    fn visible_page_stays_on_previous_when_midpoint_just_before_boundary() {
+        // Midpoint just below page 1's top → still on page 0.
+        let tops = vec![0, 1000, 2000];
+        assert_eq!(visible_page_from_scroll(&tops, 599, 800), 0);
+    }
+
+    #[test]
+    fn visible_page_returns_last_page_when_scrolled_to_bottom() {
+        let tops = vec![0, 1000, 2000];
+        // scroll_top=9999 → midpoint well past all pages.
+        assert_eq!(visible_page_from_scroll(&tops, 9999, 800), 2);
+    }
+
+    #[test]
+    fn visible_page_single_page_chapter() {
+        let tops = vec![0];
+        assert_eq!(visible_page_from_scroll(&tops, 0, 800), 0);
+        assert_eq!(visible_page_from_scroll(&tops, 5000, 800), 0);
+    }
+
+    // ----- all_images_above_loaded -----
+
+    #[test]
+    fn all_above_loaded_trivially_true_for_page_zero() {
+        // No images above page 0 — always ready to scroll.
+        assert!(all_images_above_loaded(&[], 0));
+        assert!(all_images_above_loaded(&[false, false, false], 0));
+    }
+
+    #[test]
+    fn all_above_loaded_false_when_vec_too_short() {
+        // load-flag vector not yet initialised for 3 pages; target=2.
+        assert!(!all_images_above_loaded(&[true], 2));
+    }
+
+    #[test]
+    fn all_above_loaded_true_when_all_images_above_loaded() {
+        // Pages 0–2 loaded; target=3 → OK to scroll.
+        assert!(all_images_above_loaded(&[true, true, true, false], 3));
+    }
+
+    #[test]
+    fn all_above_loaded_false_when_one_image_above_not_loaded() {
+        // Page 1 not yet loaded; must not scroll to page 3.
+        assert!(!all_images_above_loaded(&[true, false, true, false], 3));
+    }
+
+    #[test]
+    fn all_above_loaded_true_for_target_equal_to_one_when_page_zero_loaded() {
+        assert!(all_images_above_loaded(&[true, false], 1));
+    }
+
+    #[test]
+    fn all_above_loaded_false_for_target_one_when_page_zero_not_loaded() {
+        // Covers the "first page from library" scenario: the load-flag for page 0
+        // (a placeholder without a URL) would be pre-set to `true` so this
+        // function returns `true` correctly. If it were `false` (e.g. a real
+        // image that hasn't loaded yet) we must wait.
+        assert!(!all_images_above_loaded(&[false, false], 1));
+    }
+
+    #[test]
+    fn all_above_loaded_only_checks_up_to_target_not_beyond() {
+        // Pages above target are all loaded; pages *at and after* target are not.
+        // `all_images_above_loaded` must not look past index `target-1`.
+        assert!(all_images_above_loaded(&[true, true, false, false], 2));
     }
 }
