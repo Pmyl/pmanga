@@ -20,6 +20,15 @@ use crate::{
 // Utilities
 // ---------------------------------------------------------------------------
 
+/// Returns the smallest chapter number that comes strictly after `n`.
+///
+/// Used as an inclusive lower bound when filtering chapters to download so that
+/// the chapter at `n` itself is excluded while fractional successors (e.g. 10.5
+/// after last_downloaded=10.0) are still included.
+pub fn next_chapter_after(n: f32) -> f32 {
+    n + 0.1
+}
+
 /// Wait `ms` milliseconds (browser/WASM-compatible).
 pub async fn sleep_ms(ms: i32) {
     let promise = Promise::new(&mut |resolve, _reject| {

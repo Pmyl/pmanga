@@ -16,7 +16,7 @@ use crate::{
             ChapterId, ChapterMeta, LastOpened, LibraryEntry, MangaId, MangaMeta,
             MangaSource, ReadingProgress, build_library_entries,
         },
-        sync::{download_chapters_to_db, extract_series_id, update_latest_downloaded_chapter},
+        sync::{download_chapters_to_db, extract_series_id, next_chapter_after, update_latest_downloaded_chapter},
     },
 };
 
@@ -482,8 +482,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                         .unwrap_or(f32::NEG_INFINITY);
                                     let default_from = max_existing.max(latest_downloaded);
                                     if default_from.is_finite() {
-                                        // Round up to next whole chapter number.
-                                        let next = (default_from.floor() as u32) + 1;
+                                        let next = next_chapter_after(default_from);
                                         *sync_from.write() = next.to_string();
                                     } else {
                                         sync_from.write().clear();

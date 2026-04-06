@@ -17,7 +17,7 @@ use crate::{
             clear_last_opened, is_startup_redirect_done, load_last_opened,
             load_proxy_url, mark_startup_redirect_done, save_last_opened,
         },
-        sync::{download_chapters_to_db, extract_series_id, update_latest_downloaded_chapter},
+        sync::{download_chapters_to_db, extract_series_id, next_chapter_after, update_latest_downloaded_chapter},
         tankobon::fetch_tankobon_csv,
     },
 };
@@ -381,11 +381,11 @@ pub fn ShelfPage() -> Element {
 
                                     // For the "no chapters" case, exclude chapters already
                                     // known to have been downloaded (and presumably deleted)
-                                    // to avoid re-downloading them.  We use a strict
-                                    // greater-than so fractional chapters (e.g. 10.5 after
-                                    // last_downloaded=10.0) are not accidentally skipped.
+                                    // to avoid re-downloading them.  We use next_chapter_after
+                                    // so fractional successors (e.g. 10.5 after
+                                    // last_downloaded=10.0) are still included.
                                     let from_ch: Option<f32> = if existing.is_empty() {
-                                        *last_downloaded
+                                        last_downloaded.map(next_chapter_after)
                                     } else {
                                         None
                                     };
@@ -397,7 +397,7 @@ pub fn ShelfPage() -> Element {
                                                 return false;
                                             }
                                             if let Some(f) = from_ch {
-                                                if c.number <= f {
+                                                if c.number < f {
                                                     return false;
                                                 }
                                             }
