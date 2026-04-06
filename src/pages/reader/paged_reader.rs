@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::navigation::go_to_page;
+use super::navigation::{go_to_page, save_progress_fire_and_forget};
 use super::options_modal::ReaderOptionsModal;
 use super::overlay::ReaderOverlay;
 use super::reader_config::ReaderConfig;
@@ -428,6 +428,17 @@ pub fn PagedReaderView(
                     }
                 }
             }
+        });
+    }
+
+    // ----- Save progress when page or chapter changes -----
+    {
+        let manga_id_for_progress = manga_id.clone();
+        use_effect(move || {
+            let p = page_signal();
+            let db = db_signal.read().clone();
+            let chapter_id = chapter_id_signal();
+            save_progress_fire_and_forget(db, manga_id_for_progress.clone(), chapter_id, p);
         });
     }
 
