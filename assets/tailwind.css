@@ -289,6 +289,9 @@
   .grid {
     display: grid;
   }
+  .inline {
+    display: inline;
+  }
   .table {
     display: table;
   }
@@ -313,8 +316,17 @@
   .h-8 {
     height: calc(var(--spacing) * 8);
   }
+  .h-32 {
+    height: calc(var(--spacing) * 32);
+  }
   .h-\[3px\] {
     height: 3px;
+  }
+  .h-auto {
+    height: auto;
+  }
+  .h-dvh {
+    height: 100dvh;
   }
   .h-full {
     height: 100%;
@@ -547,6 +559,9 @@
   .bg-\[\#5a9fd4\] {
     background-color: #5a9fd4;
   }
+  .bg-\[\#5c3d1a\]\/80 {
+    background-color: color-mix(in oklab, #5c3d1a 80%, transparent);
+  }
   .bg-\[\#8b1a1a\] {
     background-color: #8b1a1a;
   }
@@ -731,6 +746,9 @@
   .text-\[\#333\] {
     color: #333;
   }
+  .text-\[\#444\] {
+    color: #444;
+  }
   .text-\[\#555\] {
     color: #555;
   }
@@ -833,6 +851,11 @@
   .active\:bg-\[\#4a8fc4\] {
     &:active {
       background-color: #4a8fc4;
+    }
+  }
+  .active\:bg-\[\#7a5a1a\] {
+    &:active {
+      background-color: #7a5a1a;
     }
   }
   .active\:bg-\[\#8b1a1a\] {
