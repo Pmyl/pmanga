@@ -251,6 +251,8 @@ pub fn WeebCentralImporter(props: WeebCentralImporterProps) -> Element {
                     source: MangaSource::WeebCentral {
                         series_url: series_url.clone(),
                     },
+                    latest_downloaded_chapter: None,
+                    cover_url_fallback: None,
                 };
 
                 if let Err(e) = db.save_manga(&manga_meta).await {

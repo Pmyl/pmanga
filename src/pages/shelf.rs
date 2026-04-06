@@ -2,15 +2,18 @@ use std::rc::Rc;
 
 use crate::{
     components::{
-        importer::Importer, manga_card::MangaCard, weebcentral_importer::WeebCentralImporter,
+        confirm_dialog::ConfirmDialog,
+        importer::Importer,
+        manga_card::MangaCard,
+        weebcentral_importer::WeebCentralImporter,
     },
     routes::Route,
     storage::{
         db::Db,
         models::{LastOpened, MangaId, MangaSource},
         progress::{
-            is_startup_redirect_done, load_last_opened, mark_startup_redirect_done,
-            save_last_opened,
+            clear_last_opened, is_startup_redirect_done, load_last_opened,
+            mark_startup_redirect_done, save_last_opened,
         },
     },
 };
@@ -30,6 +33,9 @@ struct MangaDisplayData {
     total_pages: u32,
     /// True for WeebCentral manga — renders a 🌐 badge on the card.
     is_web: bool,
+    /// Highest chapter number ever downloaded (from MangaMeta).
+    /// Used to show "All caught up to ch. XX" when the manga is empty.
+    last_downloaded_chapter: Option<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,11 +53,14 @@ pub fn ShelfPage() -> Element {
     // Controls whether the WeebCentral importer modal is visible.
     let mut show_wc_importer: Signal<bool> = use_signal(|| false);
 
-    // Bump this to trigger a data refresh after import.
+    // Bump this to trigger a data refresh after import or delete.
     let mut refresh_counter: Signal<u32> = use_signal(|| 0);
 
     // Assembled display data for the grid.
     let mut display_data: Signal<Vec<MangaDisplayData>> = use_signal(Vec::new);
+
+    // manga_id pending deletion confirmation.
+    let mut pending_delete_manga: Signal<Option<String>> = use_signal(|| None);
 
     // Open DB on mount.
     use_effect(move || {
@@ -142,6 +151,7 @@ pub fn ShelfPage() -> Element {
                 sorted.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
                 // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
+                // Fall back to the stored cover_url_fallback when there are no chapters.
                 let cover_url: Option<String> = if let Some(first) = sorted.first() {
                     if !first.page_urls.is_empty() {
                         // WeebCentral: use the first CDN URL directly
@@ -154,7 +164,8 @@ pub fn ShelfPage() -> Element {
                         }
                     }
                 } else {
-                    None
+                    // No local chapters — use the stored fallback (WeebCentral only).
+                    manga.cover_url_fallback.clone()
                 };
 
                 // Total pages across all chapters for this manga.
@@ -189,6 +200,7 @@ pub fn ShelfPage() -> Element {
                     pages_read,
                     total_pages,
                     is_web: matches!(manga.source, MangaSource::WeebCentral { .. }),
+                    last_downloaded_chapter: manga.latest_downloaded_chapter,
                 });
             }
 
@@ -243,6 +255,7 @@ pub fn ShelfPage() -> Element {
                     for item in display_data.read().iter().cloned() {
                         {
                             let manga_id = item.manga_id.clone();
+                            let manga_id_for_delete = item.manga_id.clone();
                             let nav2 = navigator();
                             rsx! {
                                 MangaCard {
@@ -252,22 +265,92 @@ pub fn ShelfPage() -> Element {
                                         title: item.title.clone(),
                                         mangadex_id: None,
                                         source: crate::storage::models::MangaSource::Local,
+                                        latest_downloaded_chapter: item.last_downloaded_chapter,
+                                        cover_url_fallback: None,
                                     },
                                     cover_url: item.cover_url.clone(),
                                     progress_value: item.progress_value,
                                     pages_read: item.pages_read,
                                     total_pages: item.total_pages,
+                                    last_downloaded_chapter: item.last_downloaded_chapter,
                                     is_web: item.is_web,
                                     on_click: move |_| {
                                         nav2.push(Route::Library {
                                             manga_id: manga_id.clone(),
                                         });
                                     },
+                                    on_delete: move |_| {
+                                        *pending_delete_manga.write() =
+                                            Some(manga_id_for_delete.clone());
+                                    },
                                 }
                             }
                         }
                     }
                 }
+                }
+            }
+
+            // Confirm-delete dialog for whole manga
+            if pending_delete_manga.read().is_some() {
+                ConfirmDialog {
+                    message: "Delete this manga? All downloaded chapters and pages will be permanently removed.".to_string(),
+                    on_confirm: move |_| {
+                        let Some(mid) = pending_delete_manga.read().clone() else {
+                            return;
+                        };
+                        *pending_delete_manga.write() = None;
+                        let Some(db) = db_signal.read().clone() else { return };
+                        spawn(async move {
+                            let manga_id = MangaId(mid.clone());
+                            // Delete all chapters (and their pages + progress).
+                            let chapters =
+                                db.load_chapters_for_manga(&manga_id).await.unwrap_or_default();
+                            for chapter in &chapters {
+                                if let Err(e) = db.delete_chapter(&chapter.id).await {
+                                    web_sys::console::error_1(
+                                        &format!("delete_chapter error: {e}").into(),
+                                    );
+                                }
+                                if let Err(e) = db.delete_pages_for_chapter(&chapter.id).await {
+                                    web_sys::console::error_1(
+                                        &format!("delete_pages_for_chapter error: {e}").into(),
+                                    );
+                                }
+                                if let Err(e) =
+                                    db.delete_progress_for_chapter(&chapter.id).await
+                                {
+                                    web_sys::console::error_1(
+                                        &format!("delete_progress_for_chapter error: {e}").into(),
+                                    );
+                                }
+                            }
+                            // Delete the manga record itself.
+                            if let Err(e) = db.delete_manga(&manga_id).await {
+                                web_sys::console::error_1(
+                                    &format!("delete_manga error: {e}").into(),
+                                );
+                            }
+                            // Clear last_opened if it referenced this manga.
+                            match load_last_opened() {
+                                Some(LastOpened::Library { manga_id: ref lid })
+                                    if lid == &mid =>
+                                {
+                                    clear_last_opened();
+                                }
+                                Some(LastOpened::Reader { manga_id: ref rid, .. })
+                                    if rid == &mid =>
+                                {
+                                    clear_last_opened();
+                                }
+                                _ => {}
+                            }
+                            *refresh_counter.write() += 1;
+                        });
+                    },
+                    on_cancel: move |_| {
+                        *pending_delete_manga.write() = None;
+                    },
                 }
             }
 

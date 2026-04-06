@@ -35,6 +35,14 @@ pub struct MangaMeta {
     pub mangadex_id: Option<String>,
     #[serde(default)]
     pub source: MangaSource,
+    /// Highest chapter number ever downloaded for this manga.
+    /// Used as the default "From" value when syncing after all chapters are deleted.
+    #[serde(default)]
+    pub latest_downloaded_chapter: Option<f32>,
+    /// Fallback cover URL (first page of the highest-numbered deleted WeebCentral chapter).
+    /// Shown on the shelf when the manga has no local chapters.
+    #[serde(default)]
+    pub cover_url_fallback: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
