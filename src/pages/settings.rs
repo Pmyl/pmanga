@@ -143,7 +143,7 @@ pub fn SettingsPage() -> Element {
 
             // ── Section ───────────────────────────────────────────────────
             div {
-                class: "p-4 flex flex-col gap-3 overflow-y-auto flex-1",
+                class: "p-4 flex flex-col gap-3 overflow-y-auto flex-1 min-h-0",
 
                 h2 { class: "text-base font-semibold text-[#ccc]", "Gamepad Bindings" }
                 p {
