@@ -431,14 +431,21 @@ pub fn PagedReaderView(
         });
     }
 
-    // ----- Save progress when page or chapter changes -----
+    // ----- Save progress on initial entry -----
+    // Captures props by value so the effect has no reactive dependencies and
+    // runs exactly once at mount.  Subsequent page/chapter changes are already
+    // saved inside `go_to_page`.  localStorage (used for startup redirect) does
+    // not require an open DB, so None is sufficient here.
     {
-        let manga_id_for_progress = manga_id.clone();
+        let manga_id_for_mount = manga_id.clone();
+        let chapter_id_for_mount = chapter_id.clone();
         use_effect(move || {
-            let p = page_signal();
-            let db = db_signal.read().clone();
-            let chapter_id = chapter_id_signal();
-            save_progress_fire_and_forget(db, manga_id_for_progress.clone(), chapter_id, p);
+            save_progress_fire_and_forget(
+                None,
+                manga_id_for_mount.clone(),
+                chapter_id_for_mount.clone(),
+                page,
+            );
         });
     }
 
