@@ -351,6 +351,11 @@ pub fn SettingsPage() -> Element {
                         "↺ Refresh Page"
                     }
                 }
+                // ── Version ───────────────────────────────────────────────
+                p {
+                    class: "text-xs text-[#666] pt-2",
+                    "Version: {env!(\"APP_VERSION\")}"
+                }
             }
         }
     }
