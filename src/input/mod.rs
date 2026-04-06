@@ -13,6 +13,7 @@ pub enum Action {
     ToggleSpreadZoom,
     GoBack,
     Confirm,
+    Refresh,
 }
 
 impl Action {
@@ -24,6 +25,7 @@ impl Action {
             Action::ToggleSpreadZoom,
             Action::GoBack,
             Action::Confirm,
+            Action::Refresh,
         ]
     }
 
@@ -35,6 +37,7 @@ impl Action {
             Action::ToggleSpreadZoom => "Toggle Spread Zoom",
             Action::GoBack => "Go Back",
             Action::Confirm => "Confirm",
+            Action::Refresh => "Refresh Page",
         }
     }
 }

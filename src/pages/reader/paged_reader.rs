@@ -342,6 +342,9 @@ pub fn PagedReaderView(
                 });
             }
             Action::Confirm => {}
+            Action::Refresh => {
+                crate::bridge::js::reload_page();
+            }
         }
     });
 

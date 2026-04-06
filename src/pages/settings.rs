@@ -234,7 +234,14 @@ pub fn SettingsPage() -> Element {
 
                 // ── Reset to Defaults ─────────────────────────────────────
                 div {
-                    class: "mt-2",
+                    class: "mt-2 flex gap-2",
+                    button {
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333]",
+                        onclick: move |_| {
+                            crate::bridge::js::reload_page();
+                        },
+                        "↺ Refresh Page"
+                    }
                     button {
                         class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#8b1a1a] text-[#f0f0f0] active:bg-[#a82020]",
                         onclick: move |_| {

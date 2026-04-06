@@ -341,6 +341,9 @@ pub fn ScrollReaderView(
             }
             // Spread zoom is not used in scroll mode.
             Action::ToggleSpreadZoom | Action::Confirm => {}
+            Action::Refresh => {
+                crate::bridge::js::reload_page();
+            }
         }
     });
 
