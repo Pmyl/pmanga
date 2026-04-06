@@ -234,14 +234,7 @@ pub fn SettingsPage() -> Element {
 
                 // ── Reset to Defaults ─────────────────────────────────────
                 div {
-                    class: "mt-2 flex gap-2",
-                    button {
-                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333]",
-                        onclick: move |_| {
-                            crate::bridge::js::reload_page();
-                        },
-                        "↺ Refresh Page"
-                    }
+                    class: "mt-2",
                     button {
                         class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#8b1a1a] text-[#f0f0f0] active:bg-[#a82020]",
                         onclick: move |_| {
@@ -340,6 +333,22 @@ pub fn SettingsPage() -> Element {
                             class: "text-xs text-[#4caf50]",
                             "✓ Saved"
                         }
+                    }
+                }
+
+                // ── Refresh ────────────────────────────────────────────────
+                div { class: "flex flex-col gap-2 pt-2 border-t border-[#222]",
+                    h2 { class: "text-base font-semibold text-[#ccc]", "Refresh" }
+                    p {
+                        class: "text-sm text-[#666]",
+                        "Reload the current page. Also available as a configurable gamepad action."
+                    }
+                    button {
+                        class: "border-0 cursor-pointer text-sm px-3 py-1.5 rounded bg-[#252525] text-[#f0f0f0] active:bg-[#333] self-start",
+                        onclick: move |_| {
+                            crate::bridge::js::reload_page();
+                        },
+                        "↺ Refresh Page"
                     }
                 }
             }
