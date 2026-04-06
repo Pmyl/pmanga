@@ -31,7 +31,7 @@ use super::navigation::{go_to_page, save_progress_fire_and_forget};
 use super::options_modal::ReaderOptionsModal;
 use super::overlay::ReaderOverlay;
 use super::reader_config::ReaderConfig;
-use super::viewport::blob_to_object_url;
+use super::viewport::{blob_to_object_url, viewport_height, viewport_width};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,6 +51,18 @@ const SCROLL_STEP_FRACTION: f64 = 0.35;
 /// scroll container.  Needed because fractional pixel rounding can keep the
 /// `scrollTop` value a few pixels short of the exact boundary.
 const SCROLL_BOUNDARY_THRESHOLD_PX: i32 = 8;
+
+/// Top tap-zone height as a fraction of the viewport height.
+/// Tapping the top 15 % of the screen toggles the info overlay.
+const TOP_ZONE_HEIGHT_RATIO: f64 = 0.15;
+
+/// Horizontal boundary (as a fraction of viewport width) between the left
+/// tap-zone and the middle pass-through zone.
+const LEFT_ZONE_RATIO: f64 = 1.0 / 3.0;
+
+/// Horizontal boundary (as a fraction of viewport width) between the middle
+/// pass-through zone and the right tap-zone.
+const RIGHT_ZONE_RATIO: f64 = 2.0 / 3.0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -515,13 +527,56 @@ pub fn ScrollReaderView(
     // ----- Render -----
     rsx! {
         div {
-            class: "fixed inset-0 bg-black",
+            // select-none prevents accidental text selection when tapping
+            // repeatedly in quick succession (issue #1).
+            class: "fixed inset-0 bg-black select-none",
 
             // ---- Scrollable page strip ----
             div {
                 id: SCROLL_CONTAINER_ID,
+                // Native overflow-y scroll is the only scroll mechanism in this
+                // mode.  There is no separate tap-zone overlay that would block
+                // touch scroll events (issue #4).
                 class: "w-full h-dvh overflow-y-auto",
                 onscroll: handle_scroll,
+                // Position-based click routing replaces the fixed tap-zone
+                // overlay.  Using onclick directly on the scroll container avoids
+                // the iOS-Safari `pointer-events: none` parent /
+                // `pointer-events: all` child bug that made the top-bar click
+                // area unreliable in landscape (issue #2).
+                // The browser only fires onclick for taps (no significant pointer
+                // movement), so scroll gestures are never mis-routed (issue #4).
+                // `rtl_taps` is respected for left/right direction (issue #3).
+                onclick: move |e| {
+                    let coords = e.client_coordinates();
+                    let x = coords.x;
+                    let y = coords.y;
+
+                    let vw = viewport_width();
+                    let vh = viewport_height();
+
+                    let rtl = reader_config.peek().rtl_taps;
+
+                    if y < vh * TOP_ZONE_HEIGHT_RATIO {
+                        // Top zone: toggle the info overlay.
+                        overlay_visible.set(!overlay_visible());
+                    } else if x < vw * LEFT_ZONE_RATIO {
+                        // Left zone.
+                        if rtl {
+                            tap_navigate_right();
+                        } else {
+                            tap_navigate_left();
+                        }
+                    } else if x > vw * RIGHT_ZONE_RATIO {
+                        // Right zone.
+                        if rtl {
+                            tap_navigate_left();
+                        } else {
+                            tap_navigate_right();
+                        }
+                    }
+                    // Middle zone: no action — let the user scroll freely.
+                },
 
                 if !db_ready || page_urls.is_empty() && chapter_meta.is_none() {
                     div {
@@ -572,35 +627,6 @@ pub fn ScrollReaderView(
                             }
                         }
                     }
-                }
-            }
-
-            // ---- Tap zones ----
-            // Left/right zones scroll by a step (or cross chapter boundaries).
-            // The top strip toggles the info overlay.
-            // The middle zone is intentionally left transparent so users can
-            // interact with the scrollable content underneath.
-            div {
-                class: "reader-tap-zones",
-
-                div {
-                    class: "tap-zone tap-zone-left",
-                    onclick: move |_| tap_navigate_left(),
-                }
-
-                // Middle zone: pass-through in scroll mode (no action).
-                div {
-                    class: "tap-zone tap-zone-middle",
-                }
-
-                div {
-                    class: "tap-zone tap-zone-top",
-                    onclick: move |_| overlay_visible.set(!overlay_visible()),
-                }
-
-                div {
-                    class: "tap-zone tap-zone-right",
-                    onclick: move |_| tap_navigate_right(),
                 }
             }
 
