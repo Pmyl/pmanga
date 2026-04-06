@@ -471,6 +471,15 @@ pub fn ScrollReaderView(
     // This is also where the scroll container element is cached into
     // `container_signal` so the hot-path scroll handler never has to call
     // window → document → getElementById again.
+    //
+    // `images_loaded_count` tracks how many page images have fired their `onload`
+    // event.  The effect subscribes to it (while the initial scroll is still
+    // pending) so that it retries computing page tops each time another image
+    // becomes available.  This is necessary because `img` elements have zero
+    // height until their image data is downloaded; on a hard refresh the first
+    // call to `compute_page_tops` therefore returns all-zero values, and
+    // without the retry the scroll to the target page never happens.
+    let mut images_loaded_count: Signal<usize> = use_signal(|| 0);
     {
         let initial_page = page;
         let mut scrolled = use_signal(|| false);
@@ -481,6 +490,7 @@ pub fn ScrollReaderView(
             let mut prev_chapter = use_signal(|| chapter_id.clone());
             if *prev_chapter.peek() != chapter_id {
                 scrolled.set(false);
+                images_loaded_count.set(0);
                 *page_tops_signal.write() = Vec::new();
                 prev_chapter.set(chapter_id.clone());
             }
@@ -493,6 +503,15 @@ pub fn ScrollReaderView(
             }
             let count = urls.len();
             drop(urls); // release borrow before spawn captures signals
+
+            // Establish a reactive dependency on images_loaded_count so that
+            // this effect re-runs each time a page image finishes loading.
+            // The dependency is only registered while the initial scroll is
+            // still pending; once scrolled is true the read is skipped,
+            // preventing unnecessary re-runs after the scroll is committed.
+            if !scrolled() {
+                let _ = images_loaded_count();
+            }
 
             // Use spawn so elements are in the DOM when we query offsetTop.
             spawn(async move {
@@ -508,12 +527,15 @@ pub fn ScrollReaderView(
                 *page_tops_signal.write() = tops;
 
                 // Step 3: scroll to the starting page (only once per chapter).
-                if !scrolled() {
+                // Only lock the scroll guard once we have a valid target:
+                // - page 0 always has top == 0, so no scroll is needed there.
+                // - for any other page, wait until initial_top > 0, which means
+                //   at least the images above it have loaded and contributed
+                //   their height to the layout.
+                if !scrolled() && (initial_page == 0 || initial_top > 0) {
                     scrolled.set(true);
-                    if initial_top > 0 {
-                        if let Some(container) = container_signal.read().as_ref() {
-                            container.set_scroll_top(initial_top);
-                        }
+                    if let Some(container) = container_signal.read().as_ref() {
+                        container.set_scroll_top(initial_top);
                     }
                 }
             });
@@ -608,6 +630,9 @@ pub fn ScrollReaderView(
                                                 class: "w-full h-auto block select-none",
                                                 src: "{src}",
                                                 alt: "Manga page {i}",
+                                                onload: move |_| {
+                                                    *images_loaded_count.write() += 1;
+                                                },
                                             }
                                         } else {
                                             div {
@@ -619,6 +644,9 @@ pub fn ScrollReaderView(
                                                             margin-top: -{p.up}px; margin-bottom: -{p.down}px;",
                                                     src: "{src}",
                                                     alt: "Manga page {i}",
+                                                    onload: move |_| {
+                                                        *images_loaded_count.write() += 1;
+                                                    },
                                                 }
                                             }
                                         }
