@@ -84,7 +84,7 @@ pub fn MangaCard(props: MangaCardProps) -> Element {
                     small {
                         class: "text-[0.65rem] text-[#888]",
                         if let Some(n) = props.last_downloaded_chapter {
-                            if n == n.floor() {
+                            if (n - n.floor()).abs() < f32::EPSILON {
                                 "All caught up to ch. {n:.0}"
                             } else {
                                 "All caught up to ch. {n:.1}"
