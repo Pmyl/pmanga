@@ -127,8 +127,8 @@ fn compute_page_tops(page_count: usize) -> Vec<i32> {
 /// "Visible page" is defined as the last page whose top edge is at or above
 /// the midpoint of the viewport (`scroll_top + client_height / 2`).
 ///
-/// # Panics
-/// Never panics; returns `0` when `tops` is empty.
+/// # Returns
+/// Returns `0` when `tops` is empty.
 pub(crate) fn visible_page_from_scroll(tops: &[i32], scroll_top: i32, client_height: i32) -> usize {
     if tops.is_empty() {
         return 0;
