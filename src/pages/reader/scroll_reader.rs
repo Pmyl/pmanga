@@ -47,10 +47,10 @@ const SCROLL_PAGE_ID_PREFIX: &str = "pmanga-scroll-page-";
 /// ~35 % means roughly 2–3 steps to cross a viewport-height's worth of page.
 const SCROLL_STEP_FRACTION: f64 = 0.35;
 
-/// Pixel tolerance used to detect "at top" and "at bottom" of the scroll
-/// container.  Needed because fractional pixel rounding can keep the value
-/// a few pixels short of the exact boundary.
-const SCROLL_BOUNDARY_THRESHOLD: f64 = 8.0;
+/// Pixel tolerance (integer) used to detect "at top" and "at bottom" of the
+/// scroll container.  Needed because fractional pixel rounding can keep the
+/// `scrollTop` value a few pixels short of the exact boundary.
+const SCROLL_BOUNDARY_THRESHOLD_PX: i32 = 8;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,49 +80,29 @@ fn container_height() -> f64 {
         .unwrap_or(800.0)
 }
 
-/// Determine the index of the currently visible page.
+/// Compute the `offsetTop` for each page element and return them as a
+/// `Vec<i32>`.  Called **once** after pages are first rendered to the DOM so
+/// the scroll handler can determine the current page via a binary search with
+/// zero per-event allocations and zero per-event DOM queries.
 ///
-/// **Algorithm**: iterates through page elements in order; the "current page"
-/// is the *last* one whose top edge (from `getBoundingClientRect().top`) is
-/// at or above the vertical midpoint of the container's visible area.
-/// That is, we advance the current-page pointer for every page whose top has
-/// scrolled past the midpoint, which naturally yields the page whose content
-/// occupies the largest portion of the upper half of the screen.
-fn visible_page_index(page_count: usize) -> usize {
+/// `offsetTop` is relative to the scroll container and is not affected by
+/// the current scroll position, so the values remain valid throughout the
+/// lifetime of the current chapter.
+fn compute_page_tops(page_count: usize) -> Vec<i32> {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-        return 0;
+        return Vec::new();
     };
-    let midpoint = container_height() / 2.0;
-    let mut visible = 0usize;
+    let mut tops = Vec::with_capacity(page_count);
     for i in 0..page_count {
         let id = format!("{SCROLL_PAGE_ID_PREFIX}{i}");
-        if let Some(el) = doc.get_element_by_id(&id) {
-            let rect = el.get_bounding_client_rect();
-            if rect.top() <= midpoint {
-                visible = i;
-            } else {
-                break;
-            }
-        }
+        let top = doc
+            .get_element_by_id(&id)
+            .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+            .map(|el| el.offset_top())
+            .unwrap_or(0);
+        tops.push(top);
     }
-    visible
-}
-
-/// Scroll the container so that the element with the given `id` is at the
-/// top of the visible area.
-fn scroll_to_element(id: &str) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Some(el) = doc.get_element_by_id(id) else {
-        return;
-    };
-    let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() else {
-        return;
-    };
-    if let Some(container) = get_scroll_container() {
-        container.set_scroll_top(html_el.offset_top());
-    }
+    tops
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +174,17 @@ pub fn ScrollReaderView(
     let mut at_top_signal: Signal<bool> = use_signal(|| true);
     let mut at_bottom_signal: Signal<bool> = use_signal(|| false);
 
+    // Cached scroll container element (populated once after first render).
+    // Avoids repeated window → document → getElementById → dyn_into chains
+    // inside the hot-path scroll handler.
+    let mut container_signal: Signal<Option<web_sys::HtmlElement>> = use_signal(|| None);
+
+    // Pre-computed offsetTop for each page element (populated once after the
+    // page URLs are available and pages are rendered to the DOM).
+    // The scroll handler uses binary search on this Vec to find the visible
+    // page in O(log N) with zero allocations and zero DOM queries.
+    let mut page_tops_signal: Signal<Vec<i32>> = use_signal(Vec::new);
+
     // ----- Save progress when visible page changes -----
     {
         let manga_id_for_progress = manga_id.clone();
@@ -205,29 +196,48 @@ pub fn ScrollReaderView(
         });
     }
 
-    // ----- Scroll event handler -----
+    // ----- Scroll event handler (hot path — keep allocation-free) -----
+    //
+    // The scroll event fires at up to 60 fps while the user is scrolling.
+    // Every operation here must be O(1) with no heap allocations and no DOM
+    // queries beyond reading three integer properties from the cached element.
+    //
+    // Page detection uses a binary search on `page_tops_signal` (a Vec<i32> of
+    // pre-computed offsetTop values) so it is O(log N) with zero JS calls.
     let handle_scroll = {
         move |_: Event<ScrollData>| {
-            let Some(container) = get_scroll_container() else {
+            let container_guard = container_signal.read();
+            let Some(container) = container_guard.as_ref() else {
                 return;
             };
-            let scroll_top = container.scroll_top() as f64;
-            let scroll_height = container.scroll_height() as f64;
-            let client_height = container.client_height() as f64;
 
-            at_top_signal.set(scroll_top <= SCROLL_BOUNDARY_THRESHOLD);
-            at_bottom_signal
-                .set(scroll_top + client_height >= scroll_height - SCROLL_BOUNDARY_THRESHOLD);
+            let scroll_top = container.scroll_top();    // i32
+            let client_height = container.client_height(); // i32
+            let scroll_height = container.scroll_height(); // i32
 
-            let page_count = chapter_meta_signal
-                .read()
-                .as_ref()
-                .map(|m| m.page_count as usize)
-                .unwrap_or(0);
+            // Only write to signals when the value actually changes to avoid
+            // triggering spurious Dioxus re-renders.
+            let new_at_top = scroll_top <= SCROLL_BOUNDARY_THRESHOLD_PX;
+            if *at_top_signal.peek() != new_at_top {
+                at_top_signal.set(new_at_top);
+            }
 
-            if page_count > 0 {
-                let new_visible = visible_page_index(page_count);
-                if new_visible != current_visible_page() {
+            let new_at_bottom =
+                scroll_top + client_height >= scroll_height - SCROLL_BOUNDARY_THRESHOLD_PX;
+            if *at_bottom_signal.peek() != new_at_bottom {
+                at_bottom_signal.set(new_at_bottom);
+            }
+
+            // Determine the visible page: last page whose top ≤ midpoint.
+            // Binary search on the cached tops Vec — no DOM queries, no allocs.
+            let tops = page_tops_signal.read();
+            if !tops.is_empty() {
+                let midpoint = scroll_top + client_height / 2;
+                let new_visible = tops
+                    .partition_point(|&t| t <= midpoint)
+                    .saturating_sub(1)
+                    .min(tops.len() - 1);
+                if *current_visible_page.peek() != new_visible {
                     current_visible_page.set(new_visible);
                 }
             }
@@ -437,33 +447,59 @@ pub fn ScrollReaderView(
         });
     }
 
-    // ----- Scroll to initial page once images are available -----
-    // Fires every time page_urls_signal changes; the `scrolled` guard ensures
-    // we only perform the initial scroll once per chapter.
+    // ----- One-time setup: cache container, compute page tops, initial scroll -----
+    // Triggered whenever page_urls_signal becomes non-empty (i.e., the chapter
+    // data finishes loading). Runs inside `spawn` so the DOM elements exist.
+    //
+    // This is also where the scroll container element is cached into
+    // `container_signal` so the hot-path scroll handler never has to call
+    // window → document → getElementById again.
     {
         let initial_page = page;
         let mut scrolled = use_signal(|| false);
 
-        // Reset scrolled flag when chapter changes.
+        // Reset both the scroll guard and the cached tops when the chapter changes
+        // so the effect re-runs and recomputes everything for the new chapter.
         {
             let mut prev_chapter = use_signal(|| chapter_id.clone());
             if *prev_chapter.peek() != chapter_id {
                 scrolled.set(false);
+                *page_tops_signal.write() = Vec::new();
                 prev_chapter.set(chapter_id.clone());
             }
         }
 
         use_effect(move || {
             let urls = page_urls_signal.read();
-            if !urls.is_empty() && !scrolled() {
-                scrolled.set(true);
-                let id = format!("{SCROLL_PAGE_ID_PREFIX}{initial_page}");
-                // Use spawn so the scroll runs after the current render cycle
-                // has placed the elements in the DOM.
-                spawn(async move {
-                    scroll_to_element(&id);
-                });
+            if urls.is_empty() {
+                return;
             }
+            let count = urls.len();
+            drop(urls); // release borrow before spawn captures signals
+
+            // Use spawn so elements are in the DOM when we query offsetTop.
+            spawn(async move {
+                // Step 1: cache the container element (once per component lifetime).
+                if container_signal.read().is_none() {
+                    *container_signal.write() = get_scroll_container();
+                }
+
+                // Step 2: compute and cache page tops.
+                let tops = compute_page_tops(count);
+                // Snapshot the initial page's top before the write borrow.
+                let initial_top = tops.get(initial_page).copied().unwrap_or(0);
+                *page_tops_signal.write() = tops;
+
+                // Step 3: scroll to the starting page (only once per chapter).
+                if !scrolled() {
+                    scrolled.set(true);
+                    if initial_top > 0 {
+                        if let Some(container) = container_signal.read().as_ref() {
+                            container.set_scroll_top(initial_top);
+                        }
+                    }
+                }
+            });
         });
     }
 
