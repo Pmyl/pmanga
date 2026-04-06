@@ -156,7 +156,7 @@ pub fn ScrollReaderView(
     let manga_title_signal: Signal<String> = use_signal(String::new);
 
     // All page URLs for the current chapter (None = not yet loaded).
-    let page_urls_signal: Signal<Vec<Option<String>>> = use_signal(Vec::new);
+    let mut page_urls_signal: Signal<Vec<Option<String>>> = use_signal(Vec::new);
 
     let chapter_meta_signal = use_memo(move || {
         chapters_signal
@@ -486,12 +486,26 @@ pub fn ScrollReaderView(
 
         // Reset both the scroll guard and the cached tops when the chapter changes
         // so the effect re-runs and recomputes everything for the new chapter.
+        //
+        // page_urls_signal is also cleared so the effect's early-return guard
+        // (`if urls.is_empty() { return; }`) fires until the new chapter's pages
+        // have finished loading.  Without this the effect would fire immediately
+        // using the *old* chapter's DOM elements, set `scrolled = true` with the
+        // wrong position, and then skip scrolling once the real pages arrive.
+        //
+        // The container scroll position is also reset to 0 immediately so that
+        // the user does not see a flash of the old chapter at the wrong position
+        // while the new chapter is loading.
         {
             let mut prev_chapter = use_signal(|| chapter_id.clone());
             if *prev_chapter.peek() != chapter_id {
                 scrolled.set(false);
                 images_loaded_count.set(0);
                 *page_tops_signal.write() = Vec::new();
+                *page_urls_signal.write() = Vec::new();
+                if let Some(container) = get_scroll_container() {
+                    container.set_scroll_top(0);
+                }
                 prev_chapter.set(chapter_id.clone());
             }
         }
