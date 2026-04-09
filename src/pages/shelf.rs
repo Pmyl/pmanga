@@ -388,7 +388,7 @@ pub fn ShelfPage() -> Element {
                                     // so fractional successors (e.g. 10.5 after
                                     // last_downloaded=10.0) are still included.
                                     // This bound applies regardless of whether the DB still
-                                    // contains those chapters — the `existing_ids` check above
+                                    // contains those chapters — the `existing_ids` check below
                                     // handles skipping chapters that are already present.
                                     let from_ch: Option<f32> = last_downloaded.map(next_chapter_after);
 
