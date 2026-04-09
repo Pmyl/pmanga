@@ -382,16 +382,15 @@ pub fn ShelfPage() -> Element {
                                     let existing_ids: std::collections::HashSet<String> =
                                         existing.iter().map(|c| c.id.0.clone()).collect();
 
-                                    // For the "no chapters" case, exclude chapters already
-                                    // known to have been downloaded (and presumably deleted)
-                                    // to avoid re-downloading them.  We use next_chapter_after
+                                    // Exclude chapters already known to have been downloaded
+                                    // (and presumably deleted or still present) to avoid
+                                    // re-downloading old chapters.  We use next_chapter_after
                                     // so fractional successors (e.g. 10.5 after
                                     // last_downloaded=10.0) are still included.
-                                    let from_ch: Option<f32> = if existing.is_empty() {
-                                        last_downloaded.map(next_chapter_after)
-                                    } else {
-                                        None
-                                    };
+                                    // This bound applies regardless of whether the DB still
+                                    // contains those chapters — the `existing_ids` check below
+                                    // handles skipping chapters that are already present.
+                                    let from_ch: Option<f32> = last_downloaded.map(next_chapter_after);
 
                                     let new_chapters: Vec<_> = remote_chapters
                                         .into_iter()
