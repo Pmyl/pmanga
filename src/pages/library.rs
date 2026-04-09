@@ -1,7 +1,8 @@
 use std::rc::Rc;
 
 use crate::storage::progress::{
-    clear_last_opened, load_last_opened, load_proxy_url, save_last_opened,
+    clear_last_opened, load_last_opened, load_library_flat_view, load_proxy_url, save_last_opened,
+    save_library_flat_view,
 };
 use dioxus::prelude::*;
 
@@ -122,7 +123,14 @@ pub fn LibraryPage(manga_id: String) -> Element {
     let mut sync_to: Signal<String> = use_signal(String::new);
 
     // Assembled display data for the grid.
+    // Contains either grouped volume entries or individual chapter entries
+    // depending on the current `flat_view` setting.
     let mut display_data: Signal<Vec<EntryDisplayData>> = use_signal(Vec::new);
+
+    // Whether to show individual chapters instead of grouped volumes.
+    // Persisted globally in localStorage.
+    let mut flat_view: Signal<bool> =
+        use_signal(load_library_flat_view);
 
     // Which entry is pending deletion (index into display_data).
     let mut pending_delete: Signal<Option<usize>> = use_signal(|| None);
@@ -181,6 +189,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
         };
 
         let mid = manga_id_for_load.clone();
+        let is_flat = *flat_view.read();
 
         spawn(async move {
             // Revoke old blob URLs — never revoke CDN URLs (WeebCentral).
@@ -192,7 +201,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 }
             }
 
-            let chapters = match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
+            let mut chapters = match db.load_chapters_for_manga(&MangaId(mid.clone())).await {
                 Ok(v) => v,
                 Err(e) => {
                     web_sys::console::error_1(
@@ -210,82 +219,134 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 }
             };
 
-            let entries = build_library_entries(chapters);
-            let mut items: Vec<EntryDisplayData> = Vec::new();
+            // Sort once; reuse for both grouped and flat views.
+            chapters.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
-            for entry in entries {
-                // Get the first chapter (sorted by chapter_number) for cover + navigation.
-                let chapter_list: Vec<_> = match &entry {
-                    LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
-                    LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
-                };
-
-                let first_chapter = chapter_list
-                    .iter()
-                    .min_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
-
-                let first_chapter_id = match first_chapter {
-                    Some(ch) => ch.id.0.clone(),
-                    None => continue,
-                };
-
-                // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
-                let cover_url: Option<String> = match first_chapter {
-                    Some(ch) if !ch.page_urls.is_empty() => {
-                        // WeebCentral: use first CDN URL directly
+            let items: Vec<EntryDisplayData> = if is_flat {
+                // Flat (per-chapter) view — one entry per chapter.
+                let mut flat_items: Vec<EntryDisplayData> = Vec::new();
+                for ch in chapters {
+                    let chapter_id = ch.id.clone();
+                    let cover_url: Option<String> = if !ch.page_urls.is_empty() {
                         ch.page_urls.first().cloned()
-                    }
-                    Some(ch) => match db.load_page(&ch.id, 0).await {
-                        Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
-                        _ => None,
-                    },
-                    None => None,
-                };
+                    } else {
+                        match db.load_page(&chapter_id, 0).await {
+                            Ok(Some(blob)) => {
+                                web_sys::Url::create_object_url_with_blob(&blob).ok()
+                            }
+                            _ => None,
+                        }
+                    };
+                    let total_pages = ch.page_count;
+                    let pages_read = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id == chapter_id)
+                        .map(|p| (p.page as u32 + 1).min(total_pages))
+                        .unwrap_or(0);
+                    let progress_value = if total_pages > 0 {
+                        (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let resume_page = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id == chapter_id)
+                        .map(|p| p.page)
+                        .unwrap_or(0);
+                    let first_chapter_id = chapter_id.0.clone();
+                    flat_items.push(EntryDisplayData {
+                        entry: LibraryEntry::LoneChapter(ch),
+                        cover_url,
+                        progress_value,
+                        pages_read,
+                        total_pages,
+                        first_chapter_id,
+                        resume_page,
+                    });
+                }
+                flat_items
+            } else {
+                // Grouped (volume) view — entries grouped by tankobon volume.
+                let entries = build_library_entries(chapters);
+                let mut grouped_items: Vec<EntryDisplayData> = Vec::new();
 
-                // Progress: sum across all chapters in this entry.
-                let total_pages: u32 = chapter_list.iter().map(|c| c.page_count).sum();
+                for entry in entries {
+                    // Get the first chapter (sorted by chapter_number) for cover + navigation.
+                    let chapter_list: Vec<_> = match &entry {
+                        LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                        LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
+                    };
 
-                let pages_read: u32 = all_progress
-                    .iter()
-                    .filter_map(|p| {
-                        let chapter = chapter_list.iter().find(|c| c.id == p.chapter_id)?;
-                        // p.page is 0-based index; +1 converts to a read-page count.
-                        // Clamped to page_count so a stale/oversized saved value never
-                        // inflates the total beyond 100 %.
-                        Some((p.page as u32 + 1).min(chapter.page_count))
-                    })
-                    .sum();
+                    let first_chapter = chapter_list
+                        .iter()
+                        .min_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
-                let progress_value = if total_pages > 0 {
-                    (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
+                    let first_chapter_id = match first_chapter {
+                        Some(ch) => ch.id.0.clone(),
+                        None => continue,
+                    };
 
-                // Resume page: last saved progress for the first chapter.
-                let resume_page = all_progress
-                    .iter()
-                    .find(|p| p.chapter_id.0 == first_chapter_id)
-                    .map(|p| p.page)
-                    .unwrap_or(0);
+                    // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
+                    let cover_url: Option<String> = match first_chapter {
+                        Some(ch) if !ch.page_urls.is_empty() => {
+                            // WeebCentral: use first CDN URL directly
+                            ch.page_urls.first().cloned()
+                        }
+                        Some(ch) => match db.load_page(&ch.id, 0).await {
+                            Ok(Some(blob)) => {
+                                web_sys::Url::create_object_url_with_blob(&blob).ok()
+                            }
+                            _ => None,
+                        },
+                        None => None,
+                    };
 
-                items.push(EntryDisplayData {
-                    entry,
-                    cover_url,
-                    progress_value,
-                    pages_read,
-                    total_pages,
-                    first_chapter_id,
-                    resume_page,
-                });
-            }
+                    // Progress: sum across all chapters in this entry.
+                    let total_pages: u32 = chapter_list.iter().map(|c| c.page_count).sum();
+
+                    let pages_read: u32 = all_progress
+                        .iter()
+                        .filter_map(|p| {
+                            let chapter = chapter_list.iter().find(|c| c.id == p.chapter_id)?;
+                            // p.page is 0-based index; +1 converts to a read-page count.
+                            // Clamped to page_count so a stale/oversized saved value never
+                            // inflates the total beyond 100 %.
+                            Some((p.page as u32 + 1).min(chapter.page_count))
+                        })
+                        .sum();
+
+                    let progress_value = if total_pages > 0 {
+                        (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+
+                    // Resume page: last saved progress for the first chapter.
+                    let resume_page = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id.0 == first_chapter_id)
+                        .map(|p| p.page)
+                        .unwrap_or(0);
+
+                    grouped_items.push(EntryDisplayData {
+                        entry,
+                        cover_url,
+                        progress_value,
+                        pages_read,
+                        total_pages,
+                        first_chapter_id,
+                        resume_page,
+                    });
+                }
+                grouped_items
+            };
 
             *display_data.write() = items;
         });
     });
 
     // -----------------------------------------------------------------------
-    // Delete handler
+    // Delete handler (grouped view)
     // -----------------------------------------------------------------------
     let manga_id_for_delete = manga_id.clone();
     let on_confirm_delete = move |_| {
@@ -426,6 +487,25 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     "← Back"
                 }
                 h1 { class: "text-base font-semibold flex-1 truncate", "Library" }
+
+                // Flat/grouped view toggle
+                {
+                    rsx! {
+                        button {
+                            class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
+                            title: if *flat_view.read() { "Switch to volume view" } else { "Switch to chapter view" },
+                            onclick: move |_| {
+                                let new_flat = !*flat_view.read();
+                                flat_view.set(new_flat);
+                                // Reset select mode when toggling to avoid stale indices.
+                                select_mode.set(false);
+                                selected_indices.write().clear();
+                                save_library_flat_view(new_flat);
+                            },
+                            if *flat_view.read() { "Vol." } else { "Chs." }
+                        }
+                    }
+                }
 
                 // Select mode toggle
                 button {

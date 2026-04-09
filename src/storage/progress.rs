@@ -8,6 +8,7 @@ use std::cell::Cell;
 
 const LAST_OPENED_KEY: &str = "pmanga_last_opened";
 const PROXY_URL_KEY: &str = "pmanga_proxy_url";
+const LIBRARY_FLAT_VIEW_KEY: &str = "pmanga_library_flat_view";
 
 // In-memory flag: set to `true` the first time the startup redirect fires.
 // Using `thread_local!` instead of sessionStorage means it can never fail
@@ -70,6 +71,26 @@ pub fn load_proxy_url() -> Option<String> {
     // whether accessed via localhost or a LAN IP like 192.168.1.79.
     let hostname = window.location().hostname().ok()?;
     Some(format!("https://{}:7331", hostname))
+}
+
+pub fn save_library_flat_view(flat: bool) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
+    let _ = storage.set_item(LIBRARY_FLAT_VIEW_KEY, if flat { "1" } else { "0" });
+}
+
+pub fn load_library_flat_view() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return false;
+    };
+    matches!(storage.get_item(LIBRARY_FLAT_VIEW_KEY), Ok(Some(ref v)) if v == "1")
 }
 
 #[allow(dead_code)]
