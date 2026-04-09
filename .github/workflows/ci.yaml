@@ -27,3 +27,6 @@ jobs:
 
       - name: Cargo check
         run: cargo check --target wasm32-unknown-unknown
+
+      - name: Cargo test
+        run: cargo test
