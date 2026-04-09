@@ -123,10 +123,9 @@ pub fn LibraryPage(manga_id: String) -> Element {
     let mut sync_to: Signal<String> = use_signal(String::new);
 
     // Assembled display data for the grid.
+    // Contains either grouped volume entries or individual chapter entries
+    // depending on the current `flat_view` setting.
     let mut display_data: Signal<Vec<EntryDisplayData>> = use_signal(Vec::new);
-
-    // Flat (per-chapter) display data — used when flat_view is enabled.
-    let mut flat_display_data: Signal<Vec<EntryDisplayData>> = use_signal(Vec::new);
 
     // Whether to show individual chapters instead of grouped volumes.
     // Persisted globally in localStorage.
@@ -135,9 +134,6 @@ pub fn LibraryPage(manga_id: String) -> Element {
 
     // Which entry is pending deletion (index into display_data).
     let mut pending_delete: Signal<Option<usize>> = use_signal(|| None);
-
-    // Which flat entry is pending deletion (index into flat_display_data).
-    let mut flat_pending_delete: Signal<Option<usize>> = use_signal(|| None);
 
     // Multi-select state.
     let mut select_mode: Signal<bool> = use_signal(|| false);
@@ -193,17 +189,11 @@ pub fn LibraryPage(manga_id: String) -> Element {
         };
 
         let mid = manga_id_for_load.clone();
+        let is_flat = *flat_view.read();
 
         spawn(async move {
             // Revoke old blob URLs — never revoke CDN URLs (WeebCentral).
             for old in display_data.read().iter() {
-                if let Some(url) = &old.cover_url {
-                    if url.starts_with("blob:") {
-                        let _ = web_sys::Url::revoke_object_url(url);
-                    }
-                }
-            }
-            for old in flat_display_data.read().iter() {
                 if let Some(url) = &old.cover_url {
                     if url.starts_with("blob:") {
                         let _ = web_sys::Url::revoke_object_url(url);
@@ -232,118 +222,126 @@ pub fn LibraryPage(manga_id: String) -> Element {
             // Sort once; reuse for both grouped and flat views.
             chapters.sort_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
-            let entries = build_library_entries(chapters.clone());
-            let mut items: Vec<EntryDisplayData> = Vec::new();
-
-            for entry in entries {
-                // Get the first chapter (sorted by chapter_number) for cover + navigation.
-                let chapter_list: Vec<_> = match &entry {
-                    LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
-                    LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
-                };
-
-                let first_chapter = chapter_list
-                    .iter()
-                    .min_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
-
-                let first_chapter_id = match first_chapter {
-                    Some(ch) => ch.id.0.clone(),
-                    None => continue,
-                };
-
-                // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
-                let cover_url: Option<String> = match first_chapter {
-                    Some(ch) if !ch.page_urls.is_empty() => {
-                        // WeebCentral: use first CDN URL directly
+            let items: Vec<EntryDisplayData> = if is_flat {
+                // Flat (per-chapter) view — one entry per chapter.
+                let mut flat_items: Vec<EntryDisplayData> = Vec::new();
+                for ch in chapters {
+                    let chapter_id = ch.id.clone();
+                    let cover_url: Option<String> = if !ch.page_urls.is_empty() {
                         ch.page_urls.first().cloned()
-                    }
-                    Some(ch) => match db.load_page(&ch.id, 0).await {
-                        Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
-                        _ => None,
-                    },
-                    None => None,
-                };
+                    } else {
+                        match db.load_page(&chapter_id, 0).await {
+                            Ok(Some(blob)) => {
+                                web_sys::Url::create_object_url_with_blob(&blob).ok()
+                            }
+                            _ => None,
+                        }
+                    };
+                    let total_pages = ch.page_count;
+                    let pages_read = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id == chapter_id)
+                        .map(|p| (p.page as u32 + 1).min(total_pages))
+                        .unwrap_or(0);
+                    let progress_value = if total_pages > 0 {
+                        (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let resume_page = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id == chapter_id)
+                        .map(|p| p.page)
+                        .unwrap_or(0);
+                    let first_chapter_id = chapter_id.0.clone();
+                    flat_items.push(EntryDisplayData {
+                        entry: LibraryEntry::LoneChapter(ch),
+                        cover_url,
+                        progress_value,
+                        pages_read,
+                        total_pages,
+                        first_chapter_id,
+                        resume_page,
+                    });
+                }
+                flat_items
+            } else {
+                // Grouped (volume) view — entries grouped by tankobon volume.
+                let entries = build_library_entries(chapters);
+                let mut grouped_items: Vec<EntryDisplayData> = Vec::new();
 
-                // Progress: sum across all chapters in this entry.
-                let total_pages: u32 = chapter_list.iter().map(|c| c.page_count).sum();
+                for entry in entries {
+                    // Get the first chapter (sorted by chapter_number) for cover + navigation.
+                    let chapter_list: Vec<_> = match &entry {
+                        LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                        LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
+                    };
 
-                let pages_read: u32 = all_progress
-                    .iter()
-                    .filter_map(|p| {
-                        let chapter = chapter_list.iter().find(|c| c.id == p.chapter_id)?;
-                        // p.page is 0-based index; +1 converts to a read-page count.
-                        // Clamped to page_count so a stale/oversized saved value never
-                        // inflates the total beyond 100 %.
-                        Some((p.page as u32 + 1).min(chapter.page_count))
-                    })
-                    .sum();
+                    let first_chapter = chapter_list
+                        .iter()
+                        .min_by(|a, b| a.chapter_number.total_cmp(&b.chapter_number));
 
-                let progress_value = if total_pages > 0 {
-                    (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
+                    let first_chapter_id = match first_chapter {
+                        Some(ch) => ch.id.0.clone(),
+                        None => continue,
+                    };
 
-                // Resume page: last saved progress for the first chapter.
-                let resume_page = all_progress
-                    .iter()
-                    .find(|p| p.chapter_id.0 == first_chapter_id)
-                    .map(|p| p.page)
-                    .unwrap_or(0);
+                    // Cover URL: CDN URL for WeebCentral, blob from IDB for local.
+                    let cover_url: Option<String> = match first_chapter {
+                        Some(ch) if !ch.page_urls.is_empty() => {
+                            // WeebCentral: use first CDN URL directly
+                            ch.page_urls.first().cloned()
+                        }
+                        Some(ch) => match db.load_page(&ch.id, 0).await {
+                            Ok(Some(blob)) => {
+                                web_sys::Url::create_object_url_with_blob(&blob).ok()
+                            }
+                            _ => None,
+                        },
+                        None => None,
+                    };
 
-                items.push(EntryDisplayData {
-                    entry,
-                    cover_url,
-                    progress_value,
-                    pages_read,
-                    total_pages,
-                    first_chapter_id,
-                    resume_page,
-                });
-            }
+                    // Progress: sum across all chapters in this entry.
+                    let total_pages: u32 = chapter_list.iter().map(|c| c.page_count).sum();
+
+                    let pages_read: u32 = all_progress
+                        .iter()
+                        .filter_map(|p| {
+                            let chapter = chapter_list.iter().find(|c| c.id == p.chapter_id)?;
+                            // p.page is 0-based index; +1 converts to a read-page count.
+                            // Clamped to page_count so a stale/oversized saved value never
+                            // inflates the total beyond 100 %.
+                            Some((p.page as u32 + 1).min(chapter.page_count))
+                        })
+                        .sum();
+
+                    let progress_value = if total_pages > 0 {
+                        (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+
+                    // Resume page: last saved progress for the first chapter.
+                    let resume_page = all_progress
+                        .iter()
+                        .find(|p| p.chapter_id.0 == first_chapter_id)
+                        .map(|p| p.page)
+                        .unwrap_or(0);
+
+                    grouped_items.push(EntryDisplayData {
+                        entry,
+                        cover_url,
+                        progress_value,
+                        pages_read,
+                        total_pages,
+                        first_chapter_id,
+                        resume_page,
+                    });
+                }
+                grouped_items
+            };
 
             *display_data.write() = items;
-
-            // Build flat (per-chapter) display data.
-            let mut flat_items: Vec<EntryDisplayData> = Vec::new();
-            for ch in chapters {
-                let chapter_id = ch.id.clone();
-                let cover_url: Option<String> = if !ch.page_urls.is_empty() {
-                    ch.page_urls.first().cloned()
-                } else {
-                    match db.load_page(&chapter_id, 0).await {
-                        Ok(Some(blob)) => web_sys::Url::create_object_url_with_blob(&blob).ok(),
-                        _ => None,
-                    }
-                };
-                let total_pages = ch.page_count;
-                let pages_read = all_progress
-                    .iter()
-                    .find(|p| p.chapter_id == chapter_id)
-                    .map(|p| (p.page as u32 + 1).min(total_pages))
-                    .unwrap_or(0);
-                let progress_value = if total_pages > 0 {
-                    (pages_read as f32 / total_pages as f32).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                let resume_page = all_progress
-                    .iter()
-                    .find(|p| p.chapter_id == chapter_id)
-                    .map(|p| p.page)
-                    .unwrap_or(0);
-                let first_chapter_id = chapter_id.0.clone();
-                flat_items.push(EntryDisplayData {
-                    entry: LibraryEntry::LoneChapter(ch),
-                    cover_url,
-                    progress_value,
-                    pages_read,
-                    total_pages,
-                    first_chapter_id,
-                    resume_page,
-                });
-            }
-            *flat_display_data.write() = flat_items;
         });
     });
 
@@ -407,62 +405,6 @@ pub fn LibraryPage(manga_id: String) -> Element {
     };
 
     // -----------------------------------------------------------------------
-    // Delete handler (flat / chapter view)
-    // -----------------------------------------------------------------------
-    let manga_id_for_flat_delete = manga_id.clone();
-    let on_confirm_flat_delete = move |_| {
-        let Some(idx) = *flat_pending_delete.read() else {
-            return;
-        };
-        *flat_pending_delete.write() = None;
-
-        let Some(db) = db_signal.read().clone() else {
-            return;
-        };
-
-        let entry = match flat_display_data.read().get(idx) {
-            Some(d) => d.entry.clone(),
-            None => return,
-        };
-
-        let mid = manga_id_for_flat_delete.clone();
-
-        spawn(async move {
-            let chapters: Vec<ChapterMeta> = match &entry {
-                LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
-                LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
-            };
-            let chapter_ids: Vec<ChapterId> = chapters.iter().map(|c| c.id.clone()).collect();
-
-            for cid in &chapter_ids {
-                if let Err(e) = db.delete_chapter(cid).await {
-                    web_sys::console::error_1(&format!("delete_chapter error: {e}").into());
-                }
-                if let Err(e) = db.delete_pages_for_chapter(cid).await {
-                    web_sys::console::error_1(
-                        &format!("delete_pages_for_chapter error: {e}").into(),
-                    );
-                }
-                if let Err(e) = db.delete_progress_for_chapter(cid).await {
-                    web_sys::console::error_1(
-                        &format!("delete_progress_for_chapter error: {e}").into(),
-                    );
-                }
-            }
-
-            if let Some(LastOpened::Reader { chapter_id, .. }) = load_last_opened() {
-                if chapter_ids.iter().any(|cid| cid.0 == chapter_id) {
-                    clear_last_opened();
-                }
-            }
-
-            update_manga_after_chapter_delete(&*db, &MangaId(mid.clone()), &chapters).await;
-
-            *refresh_counter.write() += 1;
-        });
-    };
-
-    // -----------------------------------------------------------------------
     // Bulk delete handler
     // -----------------------------------------------------------------------
     let manga_id_for_bulk_delete = manga_id.clone();
@@ -477,16 +419,9 @@ pub fn LibraryPage(manga_id: String) -> Element {
         };
         let mid = manga_id_for_bulk_delete.clone();
 
-        // Use the correct data source based on the current view mode.
         let entries_to_delete: Vec<_> = indices
             .iter()
-            .filter_map(|&idx| {
-                if *flat_view.read() {
-                    flat_display_data.read().get(idx).map(|d| d.entry.clone())
-                } else {
-                    display_data.read().get(idx).map(|d| d.entry.clone())
-                }
-            })
+            .filter_map(|&idx| display_data.read().get(idx).map(|d| d.entry.clone()))
             .collect();
 
         spawn(async move {
@@ -947,193 +882,97 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 class: "overflow-y-auto flex-1",
                 div {
                 class: "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] items-start gap-3 p-4",
-                if *flat_view.read() {
-                    // Flat (per-chapter) view
-                    if flat_display_data.read().is_empty() {
-                        p {
-                            class: "text-center text-[#888] py-12 px-4",
-                            "No chapters yet. Import something to get started."
-                        }
-                    } else {
-                        for (idx, item) in flat_display_data.read().iter().cloned().enumerate() {
-                            {
-                                let first_chapter_id = item.first_chapter_id.clone();
-                                let resume_page = item.resume_page;
-                                let mid_click = manga_id_for_nav.clone();
-                                let nav2 = navigator();
-
-                                let mark_read_chapters: Vec<ChapterMeta> = match &item.entry {
-                                    LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
-                                    LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
-                                };
-                                let entry_chapters = mark_read_chapters.clone();
-
-                                rsx! {
-                                    LibraryEntryCard {
-                                        key: "flat-{idx}",
-                                        entry: item.entry.clone(),
-                                        cover_url: item.cover_url.clone(),
-                                        progress_value: item.progress_value,
-                                        pages_read: item.pages_read,
-                                        total_pages: item.total_pages,
-                                        in_select_mode: *select_mode.read(),
-                                        is_selected: selected_indices.read().contains(&idx),
-                                        on_click: move |_| {
-                                            if *select_mode.read() {
-                                                let mut sel = selected_indices.write();
-                                                if sel.contains(&idx) {
-                                                    sel.remove(&idx);
-                                                } else {
-                                                    sel.insert(idx);
-                                                }
-                                            } else {
-                                                nav2.push(Route::Reader {
-                                                    manga_id: mid_click.clone(),
-                                                    chapter_id: first_chapter_id.clone(),
-                                                    page: resume_page,
-                                                });
-                                            }
-                                        },
-                                        on_delete: move |_| {
-                                            *flat_pending_delete.write() = Some(idx);
-                                        },
-                                        on_mark_read: move |_| {
-                                            let Some(db) = db_signal.read().clone() else { return };
-                                            let chapters = mark_read_chapters.clone();
-                                            spawn(async move {
-                                                for chapter in &chapters {
-                                                    if chapter.page_count == 0 {
-                                                        continue;
-                                                    }
-                                                    let progress = ReadingProgress {
-                                                        manga_id: chapter.manga_id.clone(),
-                                                        chapter_id: chapter.id.clone(),
-                                                        page: (chapter.page_count - 1) as usize,
-                                                    };
-                                                    if let Err(e) = db.save_progress(&progress).await {
-                                                        web_sys::console::error_1(
-                                                            &format!("mark_read save_progress error: {e}").into(),
-                                                        );
-                                                    }
-                                                }
-                                                *refresh_counter.write() += 1;
-                                            });
-                                        },
-                                        on_mark_unread: move |_| {
-                                            let Some(db) = db_signal.read().clone() else { return };
-                                            let chapters = entry_chapters.clone();
-                                            spawn(async move {
-                                                for chapter in &chapters {
-                                                    if let Err(e) =
-                                                        db.delete_progress_for_chapter(&chapter.id).await
-                                                    {
-                                                        web_sys::console::error_1(
-                                                            &format!("mark_unread delete_progress error: {e}").into(),
-                                                        );
-                                                    }
-                                                }
-                                                *refresh_counter.write() += 1;
-                                            });
-                                        },
-                                    }
-                                }
-                            }
-                        }
+                if display_data.read().is_empty() {
+                    p {
+                        class: "text-center text-[#888] py-12 px-4",
+                        "No chapters yet. Import something to get started."
                     }
                 } else {
-                    // Grouped (volume) view — default
-                    if display_data.read().is_empty() {
-                        p {
-                            class: "text-center text-[#888] py-12 px-4",
-                            "No chapters yet. Import something to get started."
-                        }
-                    } else {
-                        for (idx, item) in display_data.read().iter().cloned().enumerate() {
-                            {
-                                let first_chapter_id = item.first_chapter_id.clone();
-                                let resume_page = item.resume_page;
-                                let mid_click = manga_id_for_nav.clone();
-                                let nav2 = navigator();
+                    for (idx, item) in display_data.read().iter().cloned().enumerate() {
+                        {
+                            let first_chapter_id = item.first_chapter_id.clone();
+                            let resume_page = item.resume_page;
+                            let mid_click = manga_id_for_nav.clone();
+                            let nav2 = navigator();
 
-                                // Collect the chapters for this entry so the mark-read and
-                                // mark-unread handlers can save/delete progress for each one.
-                                let mark_read_chapters: Vec<ChapterMeta> = match &item.entry {
-                                    LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
-                                    LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
-                                };
-                                let entry_chapters = mark_read_chapters.clone();
+                            // Collect the chapters for this entry so the mark-read and
+                            // mark-unread handlers can save/delete progress for each one.
+                            let mark_read_chapters: Vec<ChapterMeta> = match &item.entry {
+                                LibraryEntry::Tankobon { chapters, .. } => chapters.clone(),
+                                LibraryEntry::LoneChapter(ch) => vec![ch.clone()],
+                            };
+                            let entry_chapters = mark_read_chapters.clone();
 
-                                rsx! {
-                                    LibraryEntryCard {
-                                        key: "{idx}",
-                                        entry: item.entry.clone(),
-                                        cover_url: item.cover_url.clone(),
-                                        progress_value: item.progress_value,
-                                        pages_read: item.pages_read,
-                                        total_pages: item.total_pages,
-                                        in_select_mode: *select_mode.read(),
-                                        is_selected: selected_indices.read().contains(&idx),
-                                        on_click: move |_| {
-                                            if *select_mode.read() {
-                                                let mut sel = selected_indices.write();
-                                                if sel.contains(&idx) {
-                                                    sel.remove(&idx);
-                                                } else {
-                                                    sel.insert(idx);
-                                                }
+                            rsx! {
+                                LibraryEntryCard {
+                                    key: "{idx}",
+                                    entry: item.entry.clone(),
+                                    cover_url: item.cover_url.clone(),
+                                    progress_value: item.progress_value,
+                                    pages_read: item.pages_read,
+                                    total_pages: item.total_pages,
+                                    in_select_mode: *select_mode.read(),
+                                    is_selected: selected_indices.read().contains(&idx),
+                                    on_click: move |_| {
+                                        if *select_mode.read() {
+                                            let mut sel = selected_indices.write();
+                                            if sel.contains(&idx) {
+                                                sel.remove(&idx);
                                             } else {
-                                                nav2.push(Route::Reader {
-                                                    manga_id: mid_click.clone(),
-                                                    chapter_id: first_chapter_id.clone(),
-                                                    page: resume_page,
-                                                });
+                                                sel.insert(idx);
                                             }
-                                        },
-                                        on_delete: move |_| {
-                                            *pending_delete.write() = Some(idx);
-                                        },
-                                        on_mark_read: move |_| {
-                                            let Some(db) = db_signal.read().clone() else { return };
-                                            let chapters = mark_read_chapters.clone();
-                                            spawn(async move {
-                                                for chapter in &chapters {
-                                                    if chapter.page_count == 0 {
-                                                        continue;
-                                                    }
-                                                    let progress = ReadingProgress {
-                                                        manga_id: chapter.manga_id.clone(),
-                                                        chapter_id: chapter.id.clone(),
-                                                        // Save the last valid page index so the
-                                                        // display shows 100 % and resume lands on
-                                                        // the final page.
-                                                        page: (chapter.page_count - 1) as usize,
-                                                    };
-                                                    if let Err(e) = db.save_progress(&progress).await {
-                                                        web_sys::console::error_1(
-                                                            &format!("mark_read save_progress error: {e}").into(),
-                                                        );
-                                                    }
-                                                }
-                                                *refresh_counter.write() += 1;
+                                        } else {
+                                            nav2.push(Route::Reader {
+                                                manga_id: mid_click.clone(),
+                                                chapter_id: first_chapter_id.clone(),
+                                                page: resume_page,
                                             });
-                                        },
-                                        on_mark_unread: move |_| {
-                                            let Some(db) = db_signal.read().clone() else { return };
-                                            let chapters = entry_chapters.clone();
-                                            spawn(async move {
-                                                for chapter in &chapters {
-                                                    if let Err(e) =
-                                                        db.delete_progress_for_chapter(&chapter.id).await
-                                                    {
-                                                        web_sys::console::error_1(
-                                                            &format!("mark_unread delete_progress error: {e}").into(),
-                                                        );
-                                                    }
+                                        }
+                                    },
+                                    on_delete: move |_| {
+                                        *pending_delete.write() = Some(idx);
+                                    },
+                                    on_mark_read: move |_| {
+                                        let Some(db) = db_signal.read().clone() else { return };
+                                        let chapters = mark_read_chapters.clone();
+                                        spawn(async move {
+                                            for chapter in &chapters {
+                                                if chapter.page_count == 0 {
+                                                    continue;
                                                 }
-                                                *refresh_counter.write() += 1;
-                                            });
-                                        },
-                                    }
+                                                let progress = ReadingProgress {
+                                                    manga_id: chapter.manga_id.clone(),
+                                                    chapter_id: chapter.id.clone(),
+                                                    // Save the last valid page index so the
+                                                    // display shows 100 % and resume lands on
+                                                    // the final page.
+                                                    page: (chapter.page_count - 1) as usize,
+                                                };
+                                                if let Err(e) = db.save_progress(&progress).await {
+                                                    web_sys::console::error_1(
+                                                        &format!("mark_read save_progress error: {e}").into(),
+                                                    );
+                                                }
+                                            }
+                                            *refresh_counter.write() += 1;
+                                        });
+                                    },
+                                    on_mark_unread: move |_| {
+                                        let Some(db) = db_signal.read().clone() else { return };
+                                        let chapters = entry_chapters.clone();
+                                        spawn(async move {
+                                            for chapter in &chapters {
+                                                if let Err(e) =
+                                                    db.delete_progress_for_chapter(&chapter.id).await
+                                                {
+                                                    web_sys::console::error_1(
+                                                        &format!("mark_unread delete_progress error: {e}").into(),
+                                                    );
+                                                }
+                                            }
+                                            *refresh_counter.write() += 1;
+                                        });
+                                    },
                                 }
                             }
                         }
@@ -1142,24 +981,13 @@ pub fn LibraryPage(manga_id: String) -> Element {
                 }
             }
 
-            // Confirm-delete dialog (grouped view)
+            // Confirm-delete dialog
             if pending_delete.read().is_some() {
                 ConfirmDialog {
                     message: "Delete this entry? All pages will be removed and cannot be recovered.".to_string(),
                     on_confirm: on_confirm_delete,
                     on_cancel: move |_| {
                         *pending_delete.write() = None;
-                    },
-                }
-            }
-
-            // Confirm-delete dialog (flat / chapter view)
-            if flat_pending_delete.read().is_some() {
-                ConfirmDialog {
-                    message: "Delete this chapter? All pages will be removed and cannot be recovered.".to_string(),
-                    on_confirm: on_confirm_flat_delete,
-                    on_cancel: move |_| {
-                        *flat_pending_delete.write() = None;
                     },
                 }
             }
