@@ -73,26 +73,24 @@ pub fn load_proxy_url() -> Option<String> {
     Some(format!("https://{}:7331", hostname))
 }
 
-pub fn save_library_flat_view(manga_id: &str, flat: bool) {
+pub fn save_library_flat_view(flat: bool) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let Ok(Some(storage)) = window.local_storage() else {
         return;
     };
-    let key = format!("{}_{}", LIBRARY_FLAT_VIEW_KEY, manga_id);
-    let _ = storage.set_item(&key, if flat { "1" } else { "0" });
+    let _ = storage.set_item(LIBRARY_FLAT_VIEW_KEY, if flat { "1" } else { "0" });
 }
 
-pub fn load_library_flat_view(manga_id: &str) -> bool {
+pub fn load_library_flat_view() -> bool {
     let Some(window) = web_sys::window() else {
         return false;
     };
     let Ok(Some(storage)) = window.local_storage() else {
         return false;
     };
-    let key = format!("{}_{}", LIBRARY_FLAT_VIEW_KEY, manga_id);
-    matches!(storage.get_item(&key), Ok(Some(ref v)) if v == "1")
+    matches!(storage.get_item(LIBRARY_FLAT_VIEW_KEY), Ok(Some(ref v)) if v == "1")
 }
 
 #[allow(dead_code)]

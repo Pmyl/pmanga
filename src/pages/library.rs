@@ -129,10 +129,9 @@ pub fn LibraryPage(manga_id: String) -> Element {
     let mut flat_display_data: Signal<Vec<EntryDisplayData>> = use_signal(Vec::new);
 
     // Whether to show individual chapters instead of grouped volumes.
-    // Persisted per-manga in localStorage.
-    let manga_id_for_flat = manga_id.clone();
+    // Persisted globally in localStorage.
     let mut flat_view: Signal<bool> =
-        use_signal(move || load_library_flat_view(&manga_id_for_flat));
+        use_signal(load_library_flat_view);
 
     // Which entry is pending deletion (index into display_data).
     let mut pending_delete: Signal<Option<usize>> = use_signal(|| None);
@@ -556,7 +555,6 @@ pub fn LibraryPage(manga_id: String) -> Element {
 
                 // Flat/grouped view toggle
                 {
-                    let manga_id_for_toggle = manga_id.clone();
                     rsx! {
                         button {
                             class: "border-0 cursor-pointer text-sm px-2 py-1.5 rounded bg-transparent text-[#888] active:text-[#f0f0f0]",
@@ -567,7 +565,7 @@ pub fn LibraryPage(manga_id: String) -> Element {
                                 // Reset select mode when toggling to avoid stale indices.
                                 select_mode.set(false);
                                 selected_indices.write().clear();
-                                save_library_flat_view(&manga_id_for_toggle, new_flat);
+                                save_library_flat_view(new_flat);
                             },
                             if *flat_view.read() { "Vol." } else { "Chs." }
                         }
