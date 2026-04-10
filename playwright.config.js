@@ -19,15 +19,19 @@ module.exports = defineConfig({
   // Start the app before running tests.
   //
   // In CI the WASM is pre-built by a prior workflow step, so we use a simple
-  // static-file server (`serve`) that starts instantly.  `serve --single`
+  // static-file server (`http-server`) that starts instantly.  `--spa`
   // enables SPA-mode fallback so every non-file path serves `index.html` and
   // client-side routing (Dioxus router) handles the rest.
+  //
+  // NOTE: `serve` (the vercel package) is NOT used here because its "clean
+  // URLs" feature rewrites index.html → /index → / → 404, creating a redirect
+  // loop that permanently blocks Playwright's readiness probe.
   //
   // Locally we keep `dx serve` for the normal hot-reload development flow.
   // The 10-minute timeout covers first-time compilation from scratch.
   webServer: {
     command: process.env.CI
-      ? 'npx --yes serve ./dist -l 8080 --single --no-clipboard'
+      ? 'npx --yes http-server ./dist -p 8080 --spa'
       : 'dx serve --platform web --addr 127.0.0.1',
     url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
