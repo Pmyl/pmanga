@@ -18,8 +18,9 @@ module.exports = defineConfig({
 
   // Start the app before running tests.
   //
-  // In CI the WASM is pre-built by a prior workflow step into ./dist/public,
-  // so we use a simple static-file server (`http-server`) that starts
+  // In CI the WASM is pre-built by a prior workflow step into
+  // ./target/dx/pmanga/debug/web/public (the path dx build --platform web
+  // uses), so we use a simple static-file server (`http-server`) that starts
   // instantly.  `--spa` enables SPA-mode fallback so every non-file path
   // serves `index.html` and client-side routing (Dioxus router) handles the
   // rest.
@@ -31,7 +32,7 @@ module.exports = defineConfig({
   // Locally we keep `dx serve` for the normal hot-reload development flow.
   webServer: {
     command: process.env.CI
-      ? 'npx --yes http-server ./dist/public -p 8080 --spa'
+      ? 'npx --yes http-server ./target/dx/pmanga/debug/web/public -p 8080 --spa'
       : 'dx serve --platform web --addr 127.0.0.1',
     url: 'http://localhost:8080',
     timeout: 30_000,

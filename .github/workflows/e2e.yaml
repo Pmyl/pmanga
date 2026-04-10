@@ -82,10 +82,10 @@ jobs:
         run: npx tailwindcss -i ./tailwind.css -o ./assets/tailwind.css
 
       - name: Build WASM app
-        # Produces the ./dist/public directory that the Playwright static file
-        # server (http-server ./dist/public) depends on. Without this step
-        # dist/public/ is missing and the server returns 404 for every request,
-        # blocking Playwright readiness.
+        # Produces ./target/dx/pmanga/debug/web/public that the Playwright
+        # static file server (http-server) depends on. Without this step
+        # the directory is missing and the server returns 404 for every
+        # request, blocking Playwright readiness.
         run: dx build --platform web
 
       - name: Install Playwright browsers
