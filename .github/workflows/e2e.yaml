@@ -2,16 +2,30 @@ name: E2E Tests
 
 on:
   # Manually triggered from the Actions tab — choose the PR branch when running.
-  # This keeps e2e opt-in: it does NOT run automatically on every PR since a
-  # full WASM compile + Playwright run is expensive (~10 min from cold cache).
   workflow_dispatch:
+  # Comment "/run-e2e" on any PR to trigger from the PR page itself.
+  # The run shows up in the PR's Checks tab and is fully opt-in.
+  issue_comment:
+    types: [created]
 
 jobs:
   e2e:
+    # For issue_comment events only run when:
+    #   1. The comment is on a pull request (not a plain issue).
+    #   2. The comment body is exactly "/run-e2e".
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.body == '/run-e2e')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # For comment-triggered runs, check out the PR head rather than the
+          # default branch that issue_comment events target by default.
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
