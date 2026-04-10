@@ -9,7 +9,7 @@ module.exports = defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
 
-  // Run all tests in a single worker so the shared `dx serve` process is not
+  // Run all tests in a single worker so the shared `dx run` process is not
   // overwhelmed and tests don't interfere through the browser's same-origin
   // storage (each Playwright test gets its own BrowserContext, but a single
   // worker keeps the start-up cost low).
@@ -20,8 +20,8 @@ module.exports = defineConfig({
   // Rust/WASM compilation from scratch.  In CI, a fresh server is always
   // started; locally the existing server is reused if one is already running.
   webServer: {
-    command: 'dx serve --addr localhost',
-    port: 8080,
+    command: 'dx run --addr 127.0.0.1',
+    url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',
