@@ -1,12 +1,11 @@
 //! Paged reading mode — one page at a time with tap-zone navigation,
 //! double-spread zoom, portrait zoom, gamepad support, and an info overlay.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
+use wasm_bindgen_futures::JsFuture;
 
 use crate::{
     input::gamepad::use_gamepad,
@@ -109,40 +108,6 @@ pub fn PagedReaderView(
             prev_page.set(page);
             prev_chapter.set(chapter_id.clone());
         }
-    }
-
-    // Detect image natural dimensions whenever the blob URL changes.
-    {
-        let mut img_natural_size = img_natural_size;
-        use_effect(move || {
-            let url = blob_url.read().clone();
-            img_natural_size.set(None);
-
-            if let Some(url) = url {
-                spawn(async move {
-                    let Ok(img) = web_sys::HtmlImageElement::new() else {
-                        return;
-                    };
-                    let (tx, rx) = futures_channel::oneshot::channel::<()>();
-                    let tx = RefCell::new(Some(tx));
-                    let onload = Closure::<dyn FnMut()>::new(move || {
-                        if let Some(tx) = tx.borrow_mut().take() {
-                            let _ = tx.send(());
-                        }
-                    });
-                    img.set_onload(Some(onload.as_ref().unchecked_ref()));
-                    img.set_src(&url);
-                    let _ = rx.await;
-                    drop(onload);
-
-                    let w = img.natural_width();
-                    let h = img.natural_height();
-                    if w > 0 && h > 0 {
-                        img_natural_size.set(Some((w, h)));
-                    }
-                });
-            }
-        });
     }
 
     // ----- Zoom / pan action handlers -----
@@ -450,10 +415,25 @@ pub fn PagedReaderView(
     }
 
     // ----- Resource: load current page image -----
+    //
+    // On iOS Safari, inserting an `<img>` into the DOM with a new src causes
+    // the browser to decode the image synchronously on the main thread.  For
+    // large manga pages this stall can exceed 100 ms, long enough for the
+    // 100 ms navigation debounce to expire.  Every queued tap then navigates
+    // independently, making the app appear to "run all inputs at once".
+    //
+    // Fix: pre-decode the image in a detached `HtmlImageElement` (await its
+    // `onload`) *before* writing `blob_url`.  When the visible `<img>` later
+    // renders with that same URL, the browser reuses the already-decoded data
+    // from its internal image cache and does not block the main thread.
+    //
+    // Natural dimensions are read from the same hidden element, so the
+    // separate `use_effect` that previously did this is no longer needed.
     {
         let db_signal = db_signal;
         let mut blob_url = blob_url;
         let chapter_meta_signal = chapter_meta_signal;
+        let mut img_natural_size = img_natural_size;
 
         use_resource(move || async move {
             let current_page = page_signal();
@@ -463,6 +443,7 @@ pub fn PagedReaderView(
             let db = db_signal.read().clone();
             let Some(db) = db else { return };
 
+            // Revoke the previous blob URL to free memory.
             {
                 let old = blob_url.peek().clone();
                 if let Some(url) = old {
@@ -472,30 +453,66 @@ pub fn PagedReaderView(
                 }
             }
 
+            // Clear stale dimensions for the outgoing page.
+            img_natural_size.set(None);
+
+            // Resolve the URL for the new page (online chapter or local blob).
             if let Some(ref meta) = chapter_meta {
                 if !meta.page_urls.is_empty() {
+                    // Online chapter: use the remote URL directly.
                     *blob_url.write() = meta.page_urls.get(current_page as usize).cloned();
                     return;
                 }
             }
 
-            match db
+            let new_url = match db
                 .load_page(&ChapterId(current_chapter_id), current_page as u32)
                 .await
             {
                 Ok(Some(blob)) => match blob_to_object_url(&blob) {
-                    Ok(url) => *blob_url.write() = Some(url),
+                    Ok(url) => Some(url),
                     Err(e) => {
                         web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&e));
-                        *blob_url.write() = None;
+                        None
                     }
                 },
-                Ok(None) => *blob_url.write() = None,
+                Ok(None) => None,
                 Err(e) => {
                     web_sys::console::error_1(&format!("load_page error: {e}").into());
-                    *blob_url.write() = None;
+                    None
+                }
+            };
+
+            let Some(url) = new_url else {
+                *blob_url.write() = None;
+                return;
+            };
+
+            // Pre-decode the blob image using the standard HTMLImageElement.decode()
+            // API.  decode() resolves only once the image is fully decoded and
+            // ready for presentation, guaranteeing that iOS Safari's decode cache
+            // is warm before the visible <img> appears in the DOM.  This prevents
+            // the synchronous decode stall that was causing the UI freeze.
+            if let Ok(img) = web_sys::HtmlImageElement::new() {
+                img.set_src(&url);
+                match JsFuture::from(img.decode()).await {
+                    Ok(_) => {
+                        let w = img.natural_width();
+                        let h = img.natural_height();
+                        if w > 0 && h > 0 {
+                            img_natural_size.set(Some((w, h)));
+                        }
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("Image pre-decode failed: {:?}", e).into(),
+                        );
+                    }
                 }
             }
+
+            // Image is now decoded; inserting it into the DOM will not block.
+            *blob_url.write() = Some(url);
         });
     }
 
