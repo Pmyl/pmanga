@@ -79,6 +79,9 @@ jobs:
       - name: Build Tailwind CSS
         run: npx tailwindcss -i ./tailwind.css -o ./assets/tailwind.css
 
+      - name: Build WASM app
+        run: dx build --platform web
+
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 

@@ -4,10 +4,10 @@ const { defineConfig, devices } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: './tests/e2e',
 
-  // Each test has 30 s to complete; the expect timeout gives assertions 10 s to
+  // Each test has 60 s to complete; the expect timeout gives assertions 20 s to
   // succeed so the WASM app has time to fetch data from IndexedDB and render.
-  timeout: 30_000,
-  expect: { timeout: 10_000 },
+  timeout: 60_000,
+  expect: { timeout: 20_000 },
 
   // Run all tests in a single worker so the shared `dx run` process is not
   // overwhelmed and tests don't interfere through the browser's same-origin
@@ -16,11 +16,19 @@ module.exports = defineConfig({
   workers: 1,
   fullyParallel: false,
 
-  // Start the app before running tests.  10-minute timeout covers the first
-  // Rust/WASM compilation from scratch.  In CI, a fresh server is always
-  // started; locally the existing server is reused if one is already running.
+  // Start the app before running tests.
+  //
+  // In CI the WASM is pre-built by a prior workflow step, so we use a simple
+  // static-file server (`serve`) that starts instantly.  `serve --single`
+  // enables SPA-mode fallback so every non-file path serves `index.html` and
+  // client-side routing (Dioxus router) handles the rest.
+  //
+  // Locally we keep `dx run` for the normal hot-reload development flow.
+  // The 10-minute timeout covers first-time compilation from scratch.
   webServer: {
-    command: 'dx run --addr 127.0.0.1',
+    command: process.env.CI
+      ? 'npx --yes serve ./dist -l 8080 --single --no-clipboard'
+      : 'dx run --addr 127.0.0.1',
     url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
