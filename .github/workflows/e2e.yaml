@@ -59,7 +59,7 @@ jobs:
 
       - name: Install Dioxus CLI
         run: |
-          curl -sSL https://dioxus.dev/install.sh | bash
+          cargo install dioxus-cli --version 0.7.4 --locked
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
@@ -80,9 +80,6 @@ jobs:
 
       - name: Build Tailwind CSS
         run: npx tailwindcss -i ./tailwind.css -o ./assets/tailwind.css
-
-      - name: Build WASM app
-        run: dx build --platform web
 
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
