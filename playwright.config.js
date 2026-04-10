@@ -20,15 +20,15 @@ module.exports = defineConfig({
   // Rust/WASM compilation from scratch.  In CI, a fresh server is always
   // started; locally the existing server is reused if one is already running.
   webServer: {
-    command: 'dx serve --addr localhost',
-    port: 8080,
+    command: 'dx serve --addr 127.0.0.1',
+    url: 'http://127.0.0.1:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',
   },
 
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: 'http://127.0.0.1:8080',
     // Chromium is the only browser that ships with Playwright by default and
     // is representative of the WebKit/Blink engine most users will use.
     browserName: 'chromium',
