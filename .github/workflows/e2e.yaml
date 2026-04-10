@@ -59,7 +59,7 @@ jobs:
 
       - name: Install Dioxus CLI
         run: |
-          curl -sSL https://dioxus.dev/install.sh | bash
+          cargo install dioxus-cli --version 0.7.4 --locked
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Setup Node.js
@@ -82,6 +82,9 @@ jobs:
         run: npx tailwindcss -i ./tailwind.css -o ./assets/tailwind.css
 
       - name: Build WASM app
+        # Produces the ./dist directory that the Playwright static file server
+        # (npx serve ./dist) depends on. Without this step dist/ is missing and
+        # the server returns 404 for every request, blocking Playwright readiness.
         run: dx build --platform web
 
       - name: Install Playwright browsers

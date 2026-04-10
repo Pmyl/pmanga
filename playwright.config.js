@@ -23,12 +23,12 @@ module.exports = defineConfig({
   // enables SPA-mode fallback so every non-file path serves `index.html` and
   // client-side routing (Dioxus router) handles the rest.
   //
-  // Locally we keep `dx run` for the normal hot-reload development flow.
+  // Locally we keep `dx serve` for the normal hot-reload development flow.
   // The 10-minute timeout covers first-time compilation from scratch.
   webServer: {
     command: process.env.CI
       ? 'npx --yes serve ./dist -l 8080 --single --no-clipboard'
-      : 'dx run --addr 127.0.0.1',
+      : 'dx serve --platform web --addr 127.0.0.1',
     url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
