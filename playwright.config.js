@@ -18,21 +18,25 @@ module.exports = defineConfig({
 
   // Start the app before running tests.
   //
-  // `dx serve --platform web` builds the WASM app and starts the Dioxus dev
-  // server, which correctly handles client-side routing (unlike a plain static
-  // file server that returns 404 for the SPA root).
+  // In CI the WASM is pre-built by a prior workflow step, so we use a simple
+  // static-file server (`serve`) that starts instantly.  `serve --single`
+  // enables SPA-mode fallback so every non-file path serves `index.html` and
+  // client-side routing (Dioxus router) handles the rest.
   //
-  // The 10-minute timeout covers first-time compilation from scratch in CI.
+  // Locally we keep `dx serve` for the normal hot-reload development flow.
+  // The 10-minute timeout covers first-time compilation from scratch.
   webServer: {
-    command: 'dx serve --platform web --addr 127.0.0.1',
-    url: 'http://127.0.0.1:8080',
+    command: process.env.CI
+      ? 'npx --yes serve ./dist -l 8080 --single --no-clipboard'
+      : 'dx serve --platform web --addr 127.0.0.1',
+    url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',
   },
 
   use: {
-    baseURL: 'http://127.0.0.1:8080',
+    baseURL: 'http://localhost:8080',
     // Chromium is the only browser that ships with Playwright by default and
     // is representative of the WebKit/Blink engine most users will use.
     browserName: 'chromium',
