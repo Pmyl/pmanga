@@ -19,6 +19,8 @@ jobs:
        github.event.issue.pull_request != null &&
        github.event.comment.body == '/run-e2e')
     runs-on: ubuntu-latest
+    permissions:
+      statuses: write
     steps:
       - name: Resolve PR head SHA and post pending status
         if: github.event_name == 'issue_comment'
