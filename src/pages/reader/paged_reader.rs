@@ -1,12 +1,11 @@
 //! Paged reading mode — one page at a time with tap-zone navigation,
 //! double-spread zoom, portrait zoom, gamepad support, and an info overlay.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
+use wasm_bindgen_futures::JsFuture;
 
 use crate::{
     input::gamepad::use_gamepad,
@@ -489,37 +488,26 @@ pub fn PagedReaderView(
                 return;
             };
 
-            // Pre-decode the blob image in a detached element so that iOS
-            // Safari's image decode cache is warm before the visible <img>
-            // appears in the DOM.  This prevents the synchronous decode stall
-            // that was causing the UI freeze.
+            // Pre-decode the blob image using the standard HTMLImageElement.decode()
+            // API.  decode() resolves only once the image is fully decoded and
+            // ready for presentation, guaranteeing that iOS Safari's decode cache
+            // is warm before the visible <img> appears in the DOM.  This prevents
+            // the synchronous decode stall that was causing the UI freeze.
             if let Ok(img) = web_sys::HtmlImageElement::new() {
-                let (tx, rx) = futures_channel::oneshot::channel::<()>();
-                let tx = Rc::new(RefCell::new(Some(tx)));
-                let tx_err = tx.clone();
-
-                let onload = Closure::<dyn FnMut()>::new(move || {
-                    if let Some(t) = tx.borrow_mut().take() {
-                        let _ = t.send(());
-                    }
-                });
-                let onerror = Closure::<dyn FnMut()>::new(move || {
-                    if let Some(t) = tx_err.borrow_mut().take() {
-                        let _ = t.send(());
-                    }
-                });
-
-                img.set_onload(Some(onload.as_ref().unchecked_ref()));
-                img.set_onerror(Some(onerror.as_ref().unchecked_ref()));
                 img.set_src(&url);
-                let _ = rx.await;
-                drop(onload);
-                drop(onerror);
-
-                let w = img.natural_width();
-                let h = img.natural_height();
-                if w > 0 && h > 0 {
-                    img_natural_size.set(Some((w, h)));
+                match JsFuture::from(img.decode()).await {
+                    Ok(_) => {
+                        let w = img.natural_width();
+                        let h = img.natural_height();
+                        if w > 0 && h > 0 {
+                            img_natural_size.set(Some((w, h)));
+                        }
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("Image pre-decode failed: {:?}", e).into(),
+                        );
+                    }
                 }
             }
 
