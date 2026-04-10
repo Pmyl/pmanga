@@ -20,6 +20,19 @@ jobs:
        github.event.comment.body == '/run-e2e')
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve PR head SHA and post pending status
+        if: github.event_name == 'issue_comment'
+        run: |
+          PR_SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
+          echo "PR_SHA=$PR_SHA" >> "$GITHUB_ENV"
+          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+            -f state=pending \
+            -f context="E2E Tests" \
+            -f description="Running…" \
+            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -81,3 +94,25 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 30
+
+      - name: Post success status to PR
+        if: github.event_name == 'issue_comment' && success()
+        run: |
+          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+            -f state=success \
+            -f context="E2E Tests" \
+            -f description="All E2E tests passed" \
+            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post failure status to PR
+        if: github.event_name == 'issue_comment' && failure()
+        run: |
+          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+            -f state=failure \
+            -f context="E2E Tests" \
+            -f description="E2E tests failed" \
+            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
