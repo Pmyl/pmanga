@@ -21,14 +21,14 @@ module.exports = defineConfig({
   // started; locally the existing server is reused if one is already running.
   webServer: {
     command: 'dx run --addr 127.0.0.1',
-    url: 'http://127.0.0.1:8080',
+    url: 'http://localhost:8080',
     timeout: 10 * 60 * 1000,
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',
   },
 
   use: {
-    baseURL: 'http://127.0.0.1:8080',
+    baseURL: 'http://localhost:8080',
     // Chromium is the only browser that ships with Playwright by default and
     // is representative of the WebKit/Blink engine most users will use.
     browserName: 'chromium',
