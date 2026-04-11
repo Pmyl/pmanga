@@ -50,15 +50,6 @@ test('shows a manga card for each series in the library', async ({ page }) => {
   await expect(page.getByText('Test Manga')).toBeVisible();
 });
 
-test('clicking a manga card navigates to its library page', async ({ page }) => {
-  await gotoShelf(page, { chapters: [CH1, CH2] });
-
-  await expect(page.getByText('Test Manga')).toBeVisible();
-  await page.getByText('Test Manga').click();
-
-  await expect(page).toHaveURL(/\/library\/m1/);
-});
-
 test('clicking a manga card uses hash-based routing (url contains /#/library)', async ({ page }) => {
   await gotoShelf(page, { chapters: [CH1, CH2] });
 

@@ -101,6 +101,17 @@ test('tapping the right zone on the last page navigates to the first page of the
   await expect(page).toHaveURL(/\/read\/m1\/ch2\/0/);
 });
 
+test('tapping the left zone goes to the previous page', async ({ page }) => {
+  // Start at page 1 so there is a page to go back to within the same chapter.
+  await gotoPagedReader(page, { chapterId: 'ch1', pageNum: 1 });
+
+  await expect(page.locator('img[alt="Manga page 1"]')).toBeVisible();
+
+  await clickLeftZone(page);
+
+  await expect(page).toHaveURL(/\/read\/m1\/ch1\/0/);
+});
+
 test('tapping the left zone on the first page of a chapter navigates to the last page of the previous chapter', async ({
   page,
 }) => {
