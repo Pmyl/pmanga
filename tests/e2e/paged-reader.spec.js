@@ -36,7 +36,7 @@ async function gotoPagedReader(page, { chapterId = 'ch1', pageNum = 0, chapters 
       JSON.stringify({ rtl_taps: false, vertical_scroll: false }),
     );
   });
-  await page.goto(`/read/m1/${chapterId}/${pageNum}`);
+  await page.goto(`/#/read/m1/${chapterId}/${pageNum}`);
 }
 
 /**
@@ -151,7 +151,7 @@ test('navigating away immediately after opening the reader does not crash the ap
   });
 
   // Navigate to the reader.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
 
   // Immediately navigate away before the WASM async DB work can finish.
   await page.goto('/');
@@ -164,7 +164,7 @@ test('navigating away immediately after opening the reader does not crash the ap
 
   // The reader should still be usable after the cancelled navigation — the
   // component_alive guard must not leave the app in a broken state.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
   await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
 });
 

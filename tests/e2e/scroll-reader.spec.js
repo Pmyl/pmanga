@@ -36,7 +36,7 @@ async function gotoScrollReader(
   await page.goto('/');
   await seedDb(page, { chapters });
   await enableScrollMode(page);
-  await page.goto(`/read/m1/${chapterId}/${pageNum}`);
+  await page.goto(`/#/read/m1/${chapterId}/${pageNum}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ test('navigating away while pages are loading does not crash the app', async ({ 
   await enableScrollMode(page);
 
   // Navigate to the reader…
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
 
   // …and immediately navigate away before page loads settle.
   await page.goto('/');
@@ -114,7 +114,7 @@ test('navigating away while pages are loading does not crash the app', async ({ 
   expect(errors).toHaveLength(0);
 
   // The scroll reader should still work after the cancelled navigation.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
   await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
 });
 
