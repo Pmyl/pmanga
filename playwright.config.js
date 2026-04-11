@@ -37,7 +37,7 @@ module.exports = defineConfig({
     url: 'http://localhost:8080',
     timeout: 30_000,
     reuseExistingServer: !process.env.CI,
-    stdout: 'pipe',
+    stdout: 'ignore',
   },
 
   use: {
