@@ -80,10 +80,15 @@ test('tapping the right zone when at the bottom of a chapter navigates to the ne
   await expect(page.locator('img[alt="Manga page 2"]')).toBeVisible();
 
   // Scroll the container to its very bottom so at_bottom_signal becomes true.
-  await page.evaluate(() => {
+  // The double-rAF yields back to the browser event loop twice, ensuring
+  // Dioxus (WASM) processes the scroll event and updates at_bottom_signal
+  // before we attempt the click — without this, the click only scrolls
+  // down a step instead of navigating to the next chapter.
+  await page.evaluate(() => new Promise((resolve) => {
     const container = document.getElementById('pmanga-scroll-container');
     if (container) container.scrollTop = container.scrollHeight;
-  });
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 
   // Click the right third of the screen (outside the top 15 % strip).
   const viewport = page.viewportSize();
