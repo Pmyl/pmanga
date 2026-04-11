@@ -50,13 +50,18 @@ test('shows a manga card for each series in the library', async ({ page }) => {
   await expect(page.getByText('Test Manga')).toBeVisible();
 });
 
-test('clicking a manga card navigates to its library page', async ({ page }) => {
+test('clicking a manga card uses hash-based routing (url contains /#/library)', async ({ page }) => {
   await gotoShelf(page, { chapters: [CH1, CH2] });
 
   await expect(page.getByText('Test Manga')).toBeVisible();
   await page.getByText('Test Manga').click();
 
-  await expect(page).toHaveURL(/\/library\/m1/);
+  // The app is configured with HashHistory: routes live in the URL hash
+  // fragment (e.g. http://localhost:8080/#/library/m1), not as a plain path
+  // (e.g. http://localhost:8080/library/m1).  This assertion proves that the
+  // hash fragment is what drives routing and that deep-route page.goto() calls
+  // must use the /#/ prefix.
+  await expect(page).toHaveURL(/\/#\/library\/m1/);
 });
 
 test('startup redirect: navigates to reader when last session was in reader', async ({ page }) => {

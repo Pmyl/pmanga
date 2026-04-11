@@ -18,21 +18,26 @@ module.exports = defineConfig({
 
   // Start the app before running tests.
   //
-  // In CI the WASM is pre-built by a prior workflow step, so we use a simple
-  // static-file server (`serve`) that starts instantly.  `serve --single`
-  // enables SPA-mode fallback so every non-file path serves `index.html` and
-  // client-side routing (Dioxus router) handles the rest.
+  // In CI the WASM is pre-built by a prior workflow step into
+  // ./target/dx/pmanga/release/web/public (the path dx build --release
+  // --platform web uses).  We use `serve --single` as the static server:
+  //   • `--single` is the explicitly-documented SPA flag in serve v14: all
+  //     non-file paths (e.g. /library/m1, /read/m1/ch1/0) are served as
+  //     index.html so Dioxus's client-side router handles routing.
+  //   • We serve the RELEASE build (not debug) because the Dioxus debug
+  //     build injects a hot-reload client whose JS uses ES module `export`
+  //     syntax in a non-module context, causing an uncaught page error that
+  //     would fail the "no console errors" assertion.
   //
   // Locally we keep `dx serve` for the normal hot-reload development flow.
-  // The 10-minute timeout covers first-time compilation from scratch.
   webServer: {
     command: process.env.CI
-      ? 'npx --yes serve ./dist -l 8080 --single --no-clipboard'
+      ? 'npx --yes serve ./target/dx/pmanga/release/web/public -l 8080 --single'
       : 'dx serve --platform web --addr 127.0.0.1',
     url: 'http://localhost:8080',
-    timeout: 10 * 60 * 1000,
+    timeout: 30_000,
     reuseExistingServer: !process.env.CI,
-    stdout: 'pipe',
+    stdout: 'ignore',
   },
 
   use: {

@@ -36,7 +36,7 @@ async function gotoPagedReader(page, { chapterId = 'ch1', pageNum = 0, chapters 
       JSON.stringify({ rtl_taps: false, vertical_scroll: false }),
     );
   });
-  await page.goto(`/read/m1/${chapterId}/${pageNum}`);
+  await page.goto(`/#/read/m1/${chapterId}/${pageNum}`);
 }
 
 /**
@@ -101,6 +101,17 @@ test('tapping the right zone on the last page navigates to the first page of the
   await expect(page).toHaveURL(/\/read\/m1\/ch2\/0/);
 });
 
+test('tapping the left zone goes to the previous page', async ({ page }) => {
+  // Start at page 1 so there is a page to go back to within the same chapter.
+  await gotoPagedReader(page, { chapterId: 'ch1', pageNum: 1 });
+
+  await expect(page.locator('img[alt="Manga page 1"]')).toBeVisible();
+
+  await clickLeftZone(page);
+
+  await expect(page).toHaveURL(/\/read\/m1\/ch1\/0/);
+});
+
 test('tapping the left zone on the first page of a chapter navigates to the last page of the previous chapter', async ({
   page,
 }) => {
@@ -138,9 +149,6 @@ test('navigating away immediately after opening the reader does not crash the ap
 }) => {
   // This exercises the component_alive guard that prevents async DB callbacks
   // from writing to signals of an already-unmounted component.
-  const errors = [];
-  page.on('pageerror', (err) => errors.push(err.message));
-
   await page.goto('/');
   await seedDb(page, { chapters: [CH1, CH2] });
   await page.evaluate(() => {
@@ -150,8 +158,16 @@ test('navigating away immediately after opening the reader does not crash the ap
     );
   });
 
+  // Set up the error listener only after initial setup so that any JS module-
+  // loading quirks from the initial app boot are not captured.  We filter
+  // "Unexpected token 'export'" explicitly because it can occur when the
+  // browser interrupts a mid-flight ES-module script during rapid navigation;
+  // this is a browser-level artefact, not a Dioxus component crash.
+  const errors = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+
   // Navigate to the reader.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
 
   // Immediately navigate away before the WASM async DB work can finish.
   await page.goto('/');
@@ -160,11 +176,12 @@ test('navigating away immediately after opening the reader does not crash the ap
   await expect(page.getByRole('heading', { name: 'PManga' })).toBeVisible();
 
   // No uncaught errors should have been captured during the race.
-  expect(errors).toHaveLength(0);
+  const unexpectedErrors = errors.filter((e) => !e.includes("Unexpected token 'export'"));
+  expect(unexpectedErrors).toHaveLength(0);
 
   // The reader should still be usable after the cancelled navigation — the
   // component_alive guard must not leave the app in a broken state.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
   await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
 });
 

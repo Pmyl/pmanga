@@ -23,7 +23,7 @@ const { seedDb, CH1, CH2, CH3_LONE } = require('./helpers/seed');
 async function gotoLibrary(page, seedOpts = {}) {
   await page.goto('/');
   await seedDb(page, seedOpts);
-  await page.goto('/library/m1');
+  await page.goto('/#/library/m1');
 }
 
 // ---------------------------------------------------------------------------

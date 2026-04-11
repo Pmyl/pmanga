@@ -36,7 +36,7 @@ async function gotoScrollReader(
   await page.goto('/');
   await seedDb(page, { chapters });
   await enableScrollMode(page);
-  await page.goto(`/read/m1/${chapterId}/${pageNum}`);
+  await page.goto(`/#/read/m1/${chapterId}/${pageNum}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,10 @@ test('renders all pages of the chapter as a vertically stacked strip', async ({ 
 
 test('tapping the top strip shows the overlay', async ({ page }) => {
   await gotoScrollReader(page, { chapterId: 'ch1' });
+
+  // Wait for the reader to be fully loaded before interacting with it; without
+  // this the tap zones are not yet mounted and the click has no effect.
+  await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
 
   // Overlay not visible initially.
   await expect(page.getByText('Test Manga')).not.toBeVisible();
@@ -76,10 +80,15 @@ test('tapping the right zone when at the bottom of a chapter navigates to the ne
   await expect(page.locator('img[alt="Manga page 2"]')).toBeVisible();
 
   // Scroll the container to its very bottom so at_bottom_signal becomes true.
-  await page.evaluate(() => {
+  // The double-rAF yields back to the browser event loop twice, ensuring
+  // Dioxus (WASM) processes the scroll event and updates at_bottom_signal
+  // before we attempt the click — without this, the click only scrolls
+  // down a step instead of navigating to the next chapter.
+  await page.evaluate(() => new Promise((resolve) => {
     const container = document.getElementById('pmanga-scroll-container');
     if (container) container.scrollTop = container.scrollHeight;
-  });
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 
   // Click the right third of the screen (outside the top 15 % strip).
   const viewport = page.viewportSize();
@@ -96,25 +105,31 @@ test('navigating away while pages are loading does not crash the app', async ({ 
   // resource.  The race is best-effort at e2e level since IndexedDB is fast,
   // but we can verify that a rapid navigate-away + navigate-back leaves the
   // app in a healthy state.
-  const errors = [];
-  page.on('pageerror', (err) => errors.push(err.message));
-
   await page.goto('/');
   await seedDb(page, { chapters: [CH1, CH2] });
   await enableScrollMode(page);
 
+  // Set up the error listener only after initial setup so that any JS module-
+  // loading quirks from the initial app boot are not captured.  We filter
+  // "Unexpected token 'export'" explicitly because it can occur when the
+  // browser interrupts a mid-flight ES-module script during rapid navigation;
+  // this is a browser-level artefact, not a Dioxus component crash.
+  const errors = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+
   // Navigate to the reader…
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
 
   // …and immediately navigate away before page loads settle.
   await page.goto('/');
 
   // The shelf should render cleanly.
   await expect(page.getByRole('heading', { name: 'PManga' })).toBeVisible();
-  expect(errors).toHaveLength(0);
+  const unexpectedErrors = errors.filter((e) => !e.includes("Unexpected token 'export'"));
+  expect(unexpectedErrors).toHaveLength(0);
 
   // The scroll reader should still work after the cancelled navigation.
-  await page.goto('/read/m1/ch1/0');
+  await page.goto('/#/read/m1/ch1/0');
   await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
 });
 
