@@ -124,7 +124,7 @@ test('auto-sync fires on the first shelf load when there are caught-up WC mangas
   // The Done banner ("✓ All caught-up manga are up to date.") must appear
   // without the user clicking the ↻ Sync button.
   await expect(page.getByText(/all caught-up manga are up to date/i)).toBeVisible({
-    timeout: 15_000,
+    timeout: 5_000,
   });
 });
 
@@ -143,7 +143,7 @@ test('auto-sync does not fire again when navigating away and back within the sam
   // First visit: auto-sync should fire once.
   await page.goto('/');
   await expect(page.getByText(/all caught-up manga are up to date/i)).toBeVisible({
-    timeout: 15_000,
+    timeout: 5_000,
   });
   const countAfterFirstVisit = proxyRequestCount;
   expect(countAfterFirstVisit).toBeGreaterThan(0);

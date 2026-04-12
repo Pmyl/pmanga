@@ -868,10 +868,25 @@ pub fn LibraryPage(manga_id: String) -> Element {
                     div {
                         class: "px-4 py-2 bg-[#2a1a1a] text-sm text-[#cf6679] border-b border-[#222] shrink-0 flex items-center justify-between",
                         span { "{message}" }
-                        button {
-                            class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
-                            onclick: move |_| sync_status.set(SyncStatus::Idle),
-                            "✕"
+                        div {
+                            class: "flex items-center gap-1",
+                            button {
+                                class: "border-0 cursor-pointer text-xs text-[#888] bg-transparent px-1",
+                                title: "Open proxy page",
+                                onclick: move |_| {
+                                    if let (Some(url), Some(window)) =
+                                        (load_proxy_url(), web_sys::window())
+                                    {
+                                        let _ = window.open_with_url_and_target(&url, "_blank");
+                                    }
+                                },
+                                "↗"
+                            }
+                            button {
+                                class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
+                                onclick: move |_| sync_status.set(SyncStatus::Idle),
+                                "✕"
+                            }
                         }
                     }
                 },

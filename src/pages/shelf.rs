@@ -94,6 +94,13 @@ pub fn ShelfPage() -> Element {
     // Status for the sync-all-caught-up operation.
     let mut sync_all_status: Signal<SyncAllStatus> = use_signal(|| SyncAllStatus::Idle);
 
+    // Becomes `true` once the initial DB load has written into display_data.
+    let mut data_ready: Signal<bool> = use_signal(|| false);
+
+    // `true` only on the first mount of this WASM session; `false` on in-app
+    // remounts because `is_startup_redirect_done()` is already set then.
+    let mut auto_sync_pending: Signal<bool> = use_signal(|| !is_startup_redirect_done());
+
     // Open DB on mount.
     use_effect(move || {
         spawn(async move {
@@ -241,6 +248,180 @@ pub fn ShelfPage() -> Element {
             }
 
             *display_data.write() = items;
+            *data_ready.write() = true;
+        });
+    });
+
+    // Auto-sync: on the very first shelf load in a WASM session, fire the
+    // sync-all-caught-up logic automatically so the user always sees fresh
+    // chapters without having to press ↻ Sync.
+    use_effect(move || {
+        if !*auto_sync_pending.read() {
+            return;
+        }
+        // Wait for the initial DB load to complete before reading display_data.
+        if !*data_ready.read() {
+            return;
+        }
+        *auto_sync_pending.write() = false;
+
+        let Some(db) = db_signal.read().clone() else {
+            return;
+        };
+
+        let proxy_url = match load_proxy_url() {
+            Some(u) if !u.trim().is_empty() => u,
+            _ => return,
+        };
+
+        let caught_up: Vec<(String, String, String, Option<f32>)> = display_data
+            .read()
+            .iter()
+            .filter_map(|item| {
+                let series_url = item.series_url.clone()?;
+                let is_caught_up = (item.total_pages == 0
+                    && item.last_downloaded_chapter.is_some())
+                    || (item.total_pages > 0 && item.progress_value >= 1.0);
+                if is_caught_up {
+                    Some((
+                        item.manga_id.clone(),
+                        item.title.clone(),
+                        series_url,
+                        item.last_downloaded_chapter,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Nothing to sync — stay Idle so no banner is shown.
+        if caught_up.is_empty() {
+            return;
+        }
+
+        let total_mangas = caught_up.len();
+        sync_all_status.set(SyncAllStatus::Syncing {
+            status: "Starting…".to_string(),
+            current: 0,
+            total: total_mangas,
+        });
+
+        spawn(async move {
+            let csv_rows_snapshot = fetch_tankobon_csv().await;
+            let mut grand_total_new = 0usize;
+
+            for (idx, (manga_id, title, series_url, last_downloaded)) in
+                caught_up.iter().enumerate()
+            {
+                sync_all_status.set(SyncAllStatus::Syncing {
+                    status: format!("Fetching chapters for \"{title}\"…"),
+                    current: idx + 1,
+                    total: total_mangas,
+                });
+
+                let series_id = match extract_series_id(series_url) {
+                    Some(id) => id,
+                    None => {
+                        sync_all_status.set(SyncAllStatus::Error {
+                            message: format!(
+                                "Could not extract series ID from URL for \"{title}\"."
+                            ),
+                        });
+                        return;
+                    }
+                };
+
+                let mut remote_chapters =
+                    match fetch_chapter_list(&proxy_url, &series_id).await {
+                        Ok(chs) => chs,
+                        Err(e) => {
+                            sync_all_status.set(SyncAllStatus::Error {
+                                message: format!(
+                                    "Failed to fetch chapters for \"{title}\": {e}"
+                                ),
+                            });
+                            return;
+                        }
+                    };
+
+                remote_chapters.sort_by(|a, b| a.number.total_cmp(&b.number));
+
+                let existing = match db
+                    .load_chapters_for_manga(&MangaId(manga_id.clone()))
+                    .await
+                {
+                    Ok(chs) => chs,
+                    Err(e) => {
+                        sync_all_status.set(SyncAllStatus::Error {
+                            message: format!(
+                                "Failed to load existing chapters for \"{title}\": {e}"
+                            ),
+                        });
+                        return;
+                    }
+                };
+
+                let existing_ids: std::collections::HashSet<String> =
+                    existing.iter().map(|c| c.id.0.clone()).collect();
+
+                let from_ch: Option<f32> = last_downloaded.map(next_chapter_after);
+
+                let new_chapters: Vec<_> = remote_chapters
+                    .into_iter()
+                    .filter(|c| {
+                        if existing_ids.contains(&c.id) {
+                            return false;
+                        }
+                        if let Some(f) = from_ch {
+                            if c.number < f {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .collect();
+
+                let total_new = new_chapters.len();
+
+                match download_chapters_to_db(
+                    &db,
+                    &proxy_url,
+                    &MangaId(manga_id.clone()),
+                    title,
+                    &new_chapters,
+                    &csv_rows_snapshot,
+                    |_saved, _total, status| {
+                        sync_all_status.set(SyncAllStatus::Syncing {
+                            status: format!("\"{title}\" — {status}"),
+                            current: idx + 1,
+                            total: total_mangas,
+                        });
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        sync_all_status.set(SyncAllStatus::Error { message: e });
+                        return;
+                    }
+                }
+
+                update_latest_downloaded_chapter(
+                    &db,
+                    &MangaId(manga_id.clone()),
+                    &new_chapters,
+                )
+                .await;
+
+                grand_total_new += total_new;
+            }
+
+            sync_all_status.set(SyncAllStatus::Done {
+                total_new: grand_total_new,
+            });
+            *refresh_counter.write() += 1;
         });
     });
 
@@ -309,10 +490,7 @@ pub fn ShelfPage() -> Element {
                                     .collect();
 
                             if caught_up.is_empty() {
-                                sync_all_status.set(SyncAllStatus::Error {
-                                    message: "No caught-up WeebCentral series are eligible to sync."
-                                        .to_string(),
-                                });
+                                sync_all_status.set(SyncAllStatus::Done { total_new: 0 });
                                 return;
                             }
 
@@ -496,10 +674,25 @@ pub fn ShelfPage() -> Element {
                     div {
                         class: "px-4 py-2 bg-[#2a1a1a] text-sm text-[#cf6679] border-b border-[#222] shrink-0 flex items-center justify-between",
                         span { "{message}" }
-                        button {
-                            class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
-                            onclick: move |_| sync_all_status.set(SyncAllStatus::Idle),
-                            "✕"
+                        div {
+                            class: "flex items-center gap-1",
+                            button {
+                                class: "border-0 cursor-pointer text-xs text-[#888] bg-transparent px-1",
+                                title: "Open proxy page",
+                                onclick: move |_| {
+                                    if let (Some(url), Some(window)) =
+                                        (load_proxy_url(), web_sys::window())
+                                    {
+                                        let _ = window.open_with_url_and_target(&url, "_blank");
+                                    }
+                                },
+                                "↗"
+                            }
+                            button {
+                                class: "border-0 cursor-pointer text-xs text-[#666] bg-transparent px-1",
+                                onclick: move |_| sync_all_status.set(SyncAllStatus::Idle),
+                                "✕"
+                            }
                         }
                     }
                 },
