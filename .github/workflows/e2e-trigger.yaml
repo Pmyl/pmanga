@@ -1,0 +1,31 @@
+name: E2E Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  trigger:
+    # Only run when a PR comment (not a plain issue comment) says "/run-e2e".
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/run-e2e'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      actions: write
+    steps:
+      - name: Dispatch E2E workflow on PR branch
+        # Resolve the PR's branch name and HEAD SHA, then trigger the actual
+        # E2E workflow on that branch so the workflow YAML from the PR is used
+        # (not main's). The E2E workflow will post statuses back to the PR.
+        run: |
+          PR_BRANCH=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.ref')
+          PR_SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
+          gh workflow run e2e.yaml \
+            --repo ${{ github.repository }} \
+            --ref "$PR_BRANCH" \
+            -f pr_number="${{ github.event.issue.number }}" \
+            -f pr_sha="$PR_SHA"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

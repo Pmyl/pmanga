@@ -1,33 +1,33 @@
 name: E2E Tests
 
 on:
-  # Manually triggered from the Actions tab — choose the PR branch when running.
+  # Manually triggered from the Actions tab — choose the branch when running.
+  # When triggered by a "/run-e2e" PR comment, the e2e-trigger workflow
+  # dispatches this workflow on the PR's branch so the PR's workflow file is
+  # used (not main's). The pr_sha / pr_number inputs are set automatically in
+  # that case and are used to post a commit status back to the PR.
   workflow_dispatch:
-  # Comment "/run-e2e" on any PR to trigger from the PR page itself.
-  # The run shows up in the PR's Checks tab and is fully opt-in.
-  issue_comment:
-    types: [created]
+    inputs:
+      pr_number:
+        description: 'PR number (set automatically by e2e-trigger when triggered via comment)'
+        required: false
+        default: ''
+      pr_sha:
+        description: 'PR HEAD SHA (set automatically by e2e-trigger when triggered via comment)'
+        required: false
+        default: ''
 
 jobs:
   e2e:
-    # For issue_comment events only run when:
-    #   1. The comment is on a pull request (not a plain issue).
-    #   2. The comment body is exactly "/run-e2e".
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != null &&
-       github.event.comment.body == '/run-e2e')
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       statuses: write
     steps:
-      - name: Resolve PR head SHA and post pending status
-        if: github.event_name == 'issue_comment'
+      - name: Post pending status to PR
+        if: inputs.pr_sha != ''
         run: |
-          PR_SHA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.sha')
-          echo "PR_SHA=$PR_SHA" >> "$GITHUB_ENV"
-          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
             -f state=pending \
             -f context="E2E Tests" \
             -f description="Running…" \
@@ -37,10 +37,6 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # For comment-triggered runs, check out the PR head rather than the
-          # default branch that issue_comment events target by default.
-          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -107,9 +103,9 @@ jobs:
           retention-days: 30
 
       - name: Post success status to PR
-        if: github.event_name == 'issue_comment' && success()
+        if: inputs.pr_sha != '' && success()
         run: |
-          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
             -f state=success \
             -f context="E2E Tests" \
             -f description="All E2E tests passed" \
@@ -118,9 +114,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Post failure status to PR
-        if: github.event_name == 'issue_comment' && failure()
+        if: inputs.pr_sha != '' && failure()
         run: |
-          gh api repos/${{ github.repository }}/statuses/"$PR_SHA" \
+          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
             -f state=failure \
             -f context="E2E Tests" \
             -f description="E2E tests failed" \
