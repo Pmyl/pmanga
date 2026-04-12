@@ -103,3 +103,35 @@ pub fn clear_last_opened() {
     };
     let _ = storage.remove_item(LAST_OPENED_KEY);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_startup_redirect_done, mark_startup_redirect_done};
+
+    // Each test runs in its own OS thread, so the `thread_local!` cell always
+    // starts at its initial value of `false` — no setup/teardown needed.
+
+    #[test]
+    fn startup_redirect_flag_is_false_on_fresh_wasm_load() {
+        // Simulates the state at the very first mount of ShelfPage after a page
+        // reload: the in-memory flag should be unset so auto-sync can fire.
+        assert!(!is_startup_redirect_done());
+    }
+
+    #[test]
+    fn startup_redirect_flag_becomes_true_after_being_marked() {
+        // Simulates calling mark_startup_redirect_done() inside the effect that
+        // starts the one-time auto-sync / redirect logic.
+        assert!(!is_startup_redirect_done());
+        mark_startup_redirect_done();
+        assert!(is_startup_redirect_done());
+    }
+
+    #[test]
+    fn startup_redirect_flag_stays_true_when_marked_a_second_time() {
+        // Calling mark again (e.g. if ShelfPage re-renders) must be idempotent.
+        mark_startup_redirect_done();
+        mark_startup_redirect_done();
+        assert!(is_startup_redirect_done());
+    }
+}

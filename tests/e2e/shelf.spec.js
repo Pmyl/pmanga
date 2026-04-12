@@ -7,7 +7,13 @@
  * an entry point to each manga's Library page.
  */
 const { test, expect } = require('@playwright/test');
-const { seedDb, setLastOpened, CH1, CH2 } = require('./helpers/seed');
+const { seedDb, seedWcDb, setLastOpened, setProxyUrl, CH1, CH2 } = require('./helpers/seed');
+
+// ---------------------------------------------------------------------------
+// Proxy URL used throughout sync-related tests.
+// Route this address with page.route() to intercept / abort proxy requests.
+// ---------------------------------------------------------------------------
+const TEST_PROXY_URL = 'http://127.0.0.1:7332';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,4 +90,150 @@ test('startup redirect: navigates to library when last session was in library', 
   await page.goto('/');
 
   await expect(page).toHaveURL(/\/library\/m1/);
+});
+
+// ---------------------------------------------------------------------------
+// Auto-sync on first shelf load
+// ---------------------------------------------------------------------------
+
+/**
+ * The shelf should automatically trigger a "sync all caught-up" when it first
+ * loads in a browser session, so the user always sees fresh chapters without
+ * having to click the ↻ Sync button manually.
+ *
+ * "Once per refresh" is enforced via the same in-memory WASM flag used for the
+ * startup redirect (`is_startup_redirect_done`).  A full page reload resets the
+ * WASM module and allows auto-sync to fire again; in-app navigation does not.
+ */
+test('auto-sync fires on the first shelf load when there are caught-up WC mangas', async ({ page }) => {
+  // Seed a WeebCentral manga that is "caught up":
+  // no local chapters, but latest_downloaded_chapter is set.
+  await page.goto('/');
+  await seedWcDb(page, { chapters: [] });
+  await setProxyUrl(page, TEST_PROXY_URL);
+
+  // Intercept proxy requests: respond with an empty chapter list so the sync
+  // completes quickly and we can assert on the Done banner.
+  await page.route(`${TEST_PROXY_URL}/**`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' });
+  });
+
+  // Fresh load: auto-sync should start automatically (without clicking ↻ Sync).
+  await page.goto('/');
+
+  // The Done banner ("✓ All caught-up manga are up to date.") must appear
+  // without the user clicking the ↻ Sync button.
+  await expect(page.getByText(/all caught-up manga are up to date/i)).toBeVisible({
+    timeout: 15_000,
+  });
+});
+
+test('auto-sync does not fire again when navigating away and back within the same session', async ({ page }) => {
+  // Same setup as above.
+  await page.goto('/');
+  await seedWcDb(page, { chapters: [] });
+  await setProxyUrl(page, TEST_PROXY_URL);
+
+  let proxyRequestCount = 0;
+  await page.route(`${TEST_PROXY_URL}/**`, async (route) => {
+    proxyRequestCount++;
+    await route.fulfill({ contentType: 'application/json', body: '[]' });
+  });
+
+  // First visit: auto-sync should fire once.
+  await page.goto('/');
+  await expect(page.getByText(/all caught-up manga are up to date/i)).toBeVisible({
+    timeout: 15_000,
+  });
+  const countAfterFirstVisit = proxyRequestCount;
+  expect(countAfterFirstVisit).toBeGreaterThan(0);
+
+  // Navigate to the library (in-app navigation — same WASM session, same module
+  // instance, so the in-memory "startup done" flag is still set).
+  await page.goto('/#/library/wc1');
+  await expect(page).toHaveURL(/\/#\/library\/wc1/);
+
+  // Navigate back to the shelf via a hash change (in-app, no full reload).
+  await page.goto('/#/');
+  await expect(page.getByText('WC Manga')).toBeVisible();
+
+  // Give the app time to settle; no new proxy request should have been fired.
+  await page.waitForTimeout(3_000);
+  expect(proxyRequestCount).toBe(countAfterFirstVisit);
+});
+
+// ---------------------------------------------------------------------------
+// Sync with no eligible mangas
+// ---------------------------------------------------------------------------
+
+test('clicking sync shows a positive all-done message when no caught-up WC mangas exist', async ({
+  page,
+}) => {
+  // Only local mangas — none have a WeebCentral series_url, so none are eligible.
+  await page.goto('/');
+  await seedDb(page, { chapters: [CH1, CH2] });
+  await page.goto('/');
+
+  await expect(page.getByText('Test Manga')).toBeVisible();
+
+  // Manually trigger the sync.
+  await page.getByRole('button', { name: '↻ Sync' }).click();
+
+  // Expect a positive "all done" message — NOT an error.
+  await expect(page.getByText(/all caught-up manga are up to date/i)).toBeVisible();
+  await expect(page.getByText(/No caught-up WeebCentral series/i)).not.toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Proxy page button on network error
+// ---------------------------------------------------------------------------
+
+test('sync error banner shows an "Open proxy page" button when the network request fails', async ({
+  page,
+}) => {
+  // Seed a caught-up WC manga and configure a proxy URL we can intercept.
+  await page.goto('/');
+  await seedWcDb(page, { chapters: [] });
+  await setProxyUrl(page, TEST_PROXY_URL);
+
+  // Abort all requests to the proxy to simulate a network / certificate error.
+  await page.route(`${TEST_PROXY_URL}/**`, (route) => route.abort('failed'));
+
+  await page.goto('/');
+  await expect(page.getByText('WC Manga')).toBeVisible();
+
+  // Trigger sync manually (auto-sync will also do this once implemented, but
+  // here we test the error-banner feature independently).
+  await page.getByRole('button', { name: '↻ Sync' }).click();
+
+  // The error banner should appear with a network-error message.
+  await expect(page.getByText(/network error|failed to fetch/i)).toBeVisible();
+
+  // A button that opens the proxy page must be present so the user can
+  // re-approve the certificate without leaving the app flow.
+  await expect(page.getByTitle('Open proxy page')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Regression: local-only library must not hit the proxy on load
+// ---------------------------------------------------------------------------
+
+test('shelf with local-only mangas makes no proxy requests on load', async ({ page }) => {
+  await page.goto('/');
+  await seedDb(page, { chapters: [CH1, CH2] });
+  await setProxyUrl(page, TEST_PROXY_URL);
+
+  const proxyRequests = /** @type {string[]} */ ([]);
+  await page.route(`${TEST_PROXY_URL}/**`, (route) => {
+    proxyRequests.push(route.request().url());
+    route.abort();
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('Test Manga')).toBeVisible();
+
+  // Wait long enough for any accidental auto-sync to surface.
+  await page.waitForTimeout(3_000);
+
+  expect(proxyRequests).toHaveLength(0);
 });

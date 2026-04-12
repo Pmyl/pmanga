@@ -41,6 +41,37 @@ const MANGA = {
 };
 
 /**
+ * A WeebCentral manga series used by sync-related tests.
+ * `source` is the serde_json representation of `MangaSource::WeebCentral { series_url }`.
+ * `latest_downloaded_chapter` is set so the manga is considered "caught up"
+ * when there are no chapters in the DB (total_pages == 0 && last_downloaded_chapter.is_some()).
+ */
+const WC_MANGA = {
+  id: 'wc1',
+  title: 'WC Manga',
+  mangadex_id: null,
+  source: { WeebCentral: { series_url: 'https://weebcentral.com/series/TEST_SERIES_ID/wc-manga' } },
+  latest_downloaded_chapter: 10.0,
+  cover_url_fallback: null,
+};
+
+/**
+ * A WeebCentral chapter that belongs to wc1.
+ * `source` is the serde_json representation of `ChapterSource::WeebCentral { chapter_id }`.
+ * `page_urls` is non-empty to identify this as a WeebCentral chapter.
+ */
+const WC_CH1 = {
+  id: 'wc-ch1',
+  manga_id: 'wc1',
+  chapter_number: 10.0,
+  tankobon_number: null,
+  filename: 'Chapter 10',
+  page_count: 2,
+  source: { WeebCentral: { chapter_id: 'WC_CH1_ID' } },
+  page_urls: ['https://weebcentral.com/page1.jpg', 'https://weebcentral.com/page2.jpg'],
+};
+
+/**
  * Chapter 1: belongs to Vol. 1 (tankobon_number = 1), 3 pages.
  * Serialised to match serde_json output of `ChapterMeta`.
  * Note: the Rust DB layer patches `manga_id` to be a plain string (not a
@@ -226,12 +257,58 @@ async function setLastOpened(page, lastOpened) {
   }, lastOpened);
 }
 
+/**
+ * Set `pmanga_proxy_url` in localStorage so the WASM app uses a test-controlled
+ * proxy address that can be intercepted or aborted by `page.route()`.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} url  e.g. `'http://127.0.0.1:7332'`
+ */
+async function setProxyUrl(page, url) {
+  await page.evaluate((value) => {
+    localStorage.setItem('pmanga_proxy_url', value);
+  }, url);
+}
+
+/**
+ * Seed the browser's IndexedDB with a WeebCentral manga fixture.
+ *
+ * The seeded manga (`WC_MANGA`) has `latest_downloaded_chapter` set, so even
+ * when no chapters are provided the manga is treated as "caught up" by the
+ * shelf's sync-all logic (total_pages == 0 && last_downloaded_chapter.is_some()).
+ *
+ * Call this AFTER `page.goto('/')` and BEFORE navigating to the URL under test.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {{ chapters?: object[], progress?: object[] }} [opts]
+ *   - `chapters` defaults to [] (no local chapters → "caught up" from the start)
+ *   - `progress` optional reading-progress records to seed
+ */
+async function seedWcDb(page, { chapters = [], progress } = {}) {
+  /** @type {Record<string, number>} */
+  const pageCountMap = {};
+  for (const ch of chapters) {
+    pageCountMap[ch.id] = ch.page_count;
+  }
+
+  await page.evaluate(_seedDbInBrowser, {
+    manga: WC_MANGA,
+    chapters,
+    pageCountMap,
+    progress: progress ?? null,
+  });
+}
+
 module.exports = {
   MANGA,
+  WC_MANGA,
+  WC_CH1,
   CH1,
   CH2,
   CH3_LONE,
   seedDb,
+  seedWcDb,
   enableScrollMode,
   setLastOpened,
+  setProxyUrl,
 };
