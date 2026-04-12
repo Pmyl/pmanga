@@ -200,7 +200,7 @@ test('sync error banner shows an "Open proxy page" button when the network reque
   await page.route(`${TEST_PROXY_URL}/**`, (route) => route.abort('failed'));
 
   await page.goto('/');
-  await expect(page.getByText('WC Manga')).toBeVisible();
+  await expect(page.getByText('WC Manga', { exact: true })).toBeVisible();
 
   // Trigger sync manually (auto-sync will also do this once implemented, but
   // here we test the error-banner feature independently).
