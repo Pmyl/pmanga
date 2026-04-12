@@ -5,7 +5,7 @@ on:
   # When triggered by a "/run-e2e" PR comment, the e2e-trigger workflow
   # dispatches this workflow on the PR's branch so the PR's workflow file is
   # used (not main's). The pr_sha / pr_number inputs are set automatically in
-  # that case and are used to post a commit status back to the PR.
+  # that case and are used to post a check run back to the PR.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -22,16 +22,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      statuses: write
+      checks: write
     steps:
-      - name: Post pending status to PR
+      - name: Create check run (in_progress)
+        id: create_check
         if: inputs.pr_sha != ''
         run: |
-          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
-            -f state=pending \
-            -f context="E2E Tests" \
-            -f description="Running…" \
-            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          CHECK_RUN_ID=$(gh api repos/${{ github.repository }}/check-runs \
+            -X POST \
+            -f name="E2E Tests" \
+            -f head_sha="${{ inputs.pr_sha }}" \
+            -f status="in_progress" \
+            -f details_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --jq '.id')
+          echo "check_run_id=$CHECK_RUN_ID" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -102,24 +106,24 @@ jobs:
           path: playwright-report/
           retention-days: 30
 
-      - name: Post success status to PR
+      - name: Complete check run (success)
         if: inputs.pr_sha != '' && success()
         run: |
-          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
-            -f state=success \
-            -f context="E2E Tests" \
-            -f description="All E2E tests passed" \
-            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api repos/${{ github.repository }}/check-runs/${{ steps.create_check.outputs.check_run_id }} \
+            -X PATCH \
+            -f status="completed" \
+            -f conclusion="success" \
+            -f details_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Post failure status to PR
+      - name: Complete check run (failure)
         if: inputs.pr_sha != '' && failure()
         run: |
-          gh api repos/${{ github.repository }}/statuses/${{ inputs.pr_sha }} \
-            -f state=failure \
-            -f context="E2E Tests" \
-            -f description="E2E tests failed" \
-            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api repos/${{ github.repository }}/check-runs/${{ steps.create_check.outputs.check_run_id }} \
+            -X PATCH \
+            -f status="completed" \
+            -f conclusion="failure" \
+            -f details_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
