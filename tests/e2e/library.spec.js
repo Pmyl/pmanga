@@ -8,7 +8,12 @@
  * dialog).
  */
 const { test, expect } = require('@playwright/test');
-const { seedDb, CH1, CH2, CH3_LONE } = require('./helpers/seed');
+const { seedDb, seedWcDb, setProxyUrl, WC_CH1, CH1, CH2, CH3_LONE } = require('./helpers/seed');
+
+// ---------------------------------------------------------------------------
+// Proxy URL used throughout sync-related tests.
+// ---------------------------------------------------------------------------
+const TEST_PROXY_URL = 'http://127.0.0.1:7332';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,4 +91,36 @@ test('deleting an entry: confirmation dialog → cancel keeps the entry', async 
   // Both entries should still be visible.
   await expect(page.getByText('Ch. 5.0')).toBeVisible();
   await expect(page.getByText('Vol. 1')).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Proxy page button on network error
+// ---------------------------------------------------------------------------
+
+test('sync error banner shows an "Open proxy page" button when the network request fails', async ({
+  page,
+}) => {
+  // Seed a WeebCentral manga with one chapter so the Sync button is shown.
+  await page.goto('/');
+  await seedWcDb(page, { chapters: [WC_CH1] });
+  await setProxyUrl(page, TEST_PROXY_URL);
+
+  // Abort all requests to the proxy to simulate a network / certificate error.
+  await page.route(`${TEST_PROXY_URL}/**`, (route) => route.abort('failed'));
+
+  await page.goto('/#/library/wc1');
+  await expect(page.getByText('Ch. 10.0')).toBeVisible();
+
+  // Open the sync range panel.
+  await page.getByRole('button', { name: '↻ Sync' }).click();
+
+  // Start the sync (leave From/To empty to sync everything).
+  await page.getByRole('button', { name: 'Go' }).click();
+
+  // The error banner should appear with a network-error message.
+  await expect(page.getByText(/network error|failed to fetch/i)).toBeVisible();
+
+  // A button that opens the proxy page must be present so the user can
+  // re-approve the certificate without leaving the app flow.
+  await expect(page.getByTitle('Open proxy page')).toBeVisible();
 });
