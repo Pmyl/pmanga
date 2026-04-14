@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::{
@@ -26,6 +27,30 @@ use super::viewport::{
     blob_to_object_url, is_portrait, pan_step, rendered_width_when_height_fitted, viewport_width,
 };
 use super::zoom::{PORTRAIT_QUADRANT_COUNT, portrait_zoom_image_style, spread_zoom_image_style};
+
+/// Fallback for `img_natural_size` when `HtmlImageElement.decode()` fails or
+/// returns 0×0 on a detached element (a known iOS Safari quirk).
+///
+/// Called from the visible `<img>` element's `onload` handler.  By the time
+/// `onload` fires the image is in the DOM, and `naturalWidth/naturalHeight` are
+/// reliable on every browser including iOS Safari.  If the pre-decode resource
+/// already captured the dimensions this is a no-op.
+fn capture_natural_size_from_dom(mut img_natural_size: Signal<Option<(u32, u32)>>) {
+    if img_natural_size.peek().is_some() {
+        return;
+    }
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("pmanga-reader-page"))
+    {
+        if let Ok(img_el) = el.dyn_into::<web_sys::HtmlImageElement>() {
+            let (w, h) = (img_el.natural_width(), img_el.natural_height());
+            if w > 0 && h > 0 {
+                img_natural_size.set(Some((w, h)));
+            }
+        }
+    }
+}
 
 #[component]
 pub fn PagedReaderView(
@@ -595,10 +620,15 @@ pub fn PagedReaderView(
                         let p = padding_signal.read().effective_for_page(page);
                         if p.is_zero() {
                             rsx! {
+                                // id="pmanga-reader-page" is safe: only one of the two branches
+                                // renders at a time (p.is_zero() is mutually exclusive with the
+                                // padded branch below), so there is never a duplicate ID in the DOM.
                                 img {
+                                    id: "pmanga-reader-page",
                                     class: "max-w-full max-h-dvh object-contain block select-none",
                                     src: current_blob_url.clone().unwrap_or_default(),
                                     alt: "Manga page {page}",
+                                    onload: move |_| capture_natural_size_from_dom(img_natural_size),
                                 }
                             }
                         } else {
@@ -614,9 +644,11 @@ pub fn PagedReaderView(
                                 div {
                                     class: "w-full h-full flex items-center justify-center overflow-hidden",
                                     img {
+                                        id: "pmanga-reader-page",
                                         style: "{img_style}",
                                         src: current_blob_url.clone().unwrap_or_default(),
                                         alt: "Manga page {page}",
+                                        onload: move |_| capture_natural_size_from_dom(img_natural_size),
                                     }
                                 }
                             }
