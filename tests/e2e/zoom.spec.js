@@ -14,8 +14,9 @@
  *
  * All tests explicitly set a portrait viewport (390 × 844) so that
  * `is_portrait()` inside the WASM returns `true` and the zoom code path is
- * reachable.  These tests currently fail because zoom does not activate even
- * in portrait mode.
+ * reachable.  The last test (decode() fallback) specifically exposes the
+ * iOS Safari bug where a detached HtmlImageElement returns 0×0 natural
+ * dimensions after decode(), leaving img_natural_size = None and blocking zoom.
  */
 const { test, expect } = require('@playwright/test');
 const { seedDb, CH1, CH2 } = require('./helpers/seed');
@@ -221,6 +222,45 @@ test('zoom state resets when navigating to a different page', async ({ page }) =
   // Page 1 must render without any zoom style.
   await expect(page.locator('img[alt="Manga page 1"]')).toBeVisible();
   await expect(page.locator('img[alt="Manga page 1"]')).not.toHaveAttribute(
+    'style',
+    /position:\s*absolute/,
+  );
+});
+
+test('portrait zoom activates via onload fallback when HtmlImageElement.decode() fails', async ({
+  page,
+}) => {
+  // Override decode() to always reject before any navigation.  This simulates
+  // the failure mode where the pre-decode path cannot populate img_natural_size,
+  // matching the outcome on iOS Safari where a detached HtmlImageElement reports
+  // naturalWidth = 0 even after a successful decode().  (iOS Safari resolves the
+  // decode() promise but the detached element does not update its natural
+  // dimensions; the effect is the same: img_natural_size stays None.)
+  //
+  // Without the onload fallback: zoom never activates (this test fails, exposing
+  // the bug).  With the fallback: the visible <img>'s onload event captures the
+  // natural dimensions, so zoom activates correctly (this test passes).
+  await page.addInitScript(() => {
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', {
+      value() {
+        return Promise.reject(new DOMException('Simulated decode failure', 'EncodingError'));
+      },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  await gotoPagedReader(page, { chapterId: 'ch1', pageNum: 0 });
+
+  // The image still renders because blob_url is set even when decode() rejects.
+  await expect(page.locator('img[alt="Manga page 0"]')).toBeVisible();
+
+  // Tap the centre zone to attempt zoom.
+  await clickMiddleZone(page);
+
+  // With the onload fallback the natural dimensions are captured from the
+  // visible <img> element and zoom must activate normally.
+  await expect(page.locator('img[alt="Manga page 0"]')).toHaveAttribute(
     'style',
     /position:\s*absolute/,
   );
