@@ -294,7 +294,7 @@ pub fn ScrollReaderView(
                 return;
             };
 
-            let scroll_top = container.scroll_top();    // i32
+            let scroll_top = container.scroll_top(); // i32
             let client_height = container.client_height(); // i32
             let scroll_height = container.scroll_height(); // i32
 
@@ -341,7 +341,13 @@ pub fn ScrollReaderView(
             .map(|c| c.page_count)
             .unwrap_or(1);
         let db = db_signal.read().clone();
-        (chapter_pages, all_chapters, current_chapter_id, current_idx, db)
+        (
+            chapter_pages,
+            all_chapters,
+            current_chapter_id,
+            current_idx,
+            db,
+        )
     };
 
     let handle_navigate_right = {
@@ -732,23 +738,38 @@ pub fn ScrollReaderView(
                         {
                             let p = padding_signal.read().effective_for_page(i);
                             let page_id = format!("{SCROLL_PAGE_ID_PREFIX}{i}");
+                            let has_loaded = pages_loaded_signal.read().get(i).cloned().unwrap_or(false);
+                            let img_classes = if has_loaded {
+                                "opacity-100"
+                            } else {
+                                "opacity-50"
+                            };
                             rsx! {
                                 div {
                                     id: "{page_id}",
                                     class: "w-full",
                                     if let Some(src) = url {
                                         if p.is_zero() {
-                                            img {
-                                                class: "w-full h-auto block select-none",
-                                                src: "{src}",
-                                                alt: "Manga page {i}",
-                                                onload: move |_| {
-                                                    let mut loaded = pages_loaded_signal.write();
-                                                    if loaded.len() <= i {
-                                                        loaded.resize(i + 1, false);
+                                            div {
+                                                class: "relative min-h-[400px]",
+                                                img {
+                                                    class: "w-full h-auto block select-none transition-opacity duration-100 {img_classes}",
+                                                    src: "{src}",
+                                                    alt: "Manga page {i + 1}",
+                                                    onload: move |_| {
+                                                        let mut loaded = pages_loaded_signal.write();
+                                                        if loaded.len() <= i {
+                                                            loaded.resize(i + 1, false);
+                                                        }
+                                                        loaded[i] = true;
+                                                    },
+                                                }
+                                                if !has_loaded {
+                                                    div {
+                                                        class: "absolute inset-0 flex items-center justify-center text-white text-2xl font-semibold transition-opacity duration-300 pointer-events-none",
+                                                        "Loading page {i + 1}..."
                                                     }
-                                                    loaded[i] = true;
-                                                },
+                                                }
                                             }
                                         } else {
                                             div {
