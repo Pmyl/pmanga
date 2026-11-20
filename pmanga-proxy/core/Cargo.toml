@@ -1,0 +1,12 @@
+[package]
+name = "pmanga-proxy-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.9"
+reqwest = { version = "0.13.5", features = ["json"] }
+scraper = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.7.1", features = ["cors"] }

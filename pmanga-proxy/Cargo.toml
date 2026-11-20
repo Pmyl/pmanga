@@ -1,17 +1,19 @@
+[workspace]
+members = ["core"]
+
 [package]
 name = "pmanga-proxy"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.7"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum = "0.8.9"
+axum-server = { version = "0.9.2", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
-rcgen = { version = "0.13", features = ["crypto"] }
+reqwest = { version = "0.13.5", features = ["json"] }
+rcgen = { version = "0.14.10", features = ["crypto"] }
 rustls = "0.23"
-scraper = "0.20"
+scraper = "0.29.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tower-http = { version = "0.5", features = ["cors"] }
-urlencoding = "2.1"
+pmanga-proxy-core = { path = "core" }
